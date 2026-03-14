@@ -1,0 +1,27 @@
+{
+  "seed": 1337,
+  "train_steps": 2048,
+  "game_steps": 300,
+  "metric_windows": {
+    "training_avg20": {
+      "min": -0.9,
+      "max": 1.1
+    },
+    "training_best": {
+      "min": 0.0,
+      "max": 2.0
+    },
+    "run_avg20": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "run_best": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "train_steps_done": {
+      "min": 1536.0,
+      "max": 2560.0
+    }
+  }
+}

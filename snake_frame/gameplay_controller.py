@@ -1,0 +1,1248 @@
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+import logging
+
+import pygame
+
+from .board_analysis import (
+    reachable_cell_count,
+    reachable_cells as board_reachable_cells,
+    simulate_next_snake,
+    tail_is_reachable as board_tail_is_reachable,
+)
+from .escape_controller import EscapeController
+from .observation import action_to_direction, build_observation, is_danger, next_head, valid_action_mask
+from .protocols import AgentLike, GameLike
+from .settings import DynamicControlConfig, ObsConfig, Settings
+from .space_fill_controller import SpaceFillController
+
+logger = logging.getLogger(__name__)
+
+
+class ControlMode(str, Enum):
+    PPO = "ppo"
+    ESCAPE = "escape"
+    SPACE_FILL = "space_fill"
+
+
+@dataclass
+class DynamicControllerState:
+    current_mode: ControlMode = ControlMode.PPO
+    mode_enter_step: int = 0
+    last_food_step: int = 0
+    cycle_window: deque[int] = field(default_factory=deque)
+    cycle_hash_counts: dict[int, int] = field(default_factory=dict)
+    cooldown_until_step: int = 0
+    last_switch_reason: str = "init"
+
+
+@dataclass(frozen=True)
+class CandidateDebug:
+    action: int
+    cell: tuple[int, int]
+    danger: bool
+    reachable_ratio: float
+    reachable_cells: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class AgentDebugSnapshot:
+    head: tuple[int, int]
+    predicted_action: int
+    chosen_action: int
+    candidates: tuple[CandidateDebug, CandidateDebug, CandidateDebug]
+    action_probs: tuple[float, float, float] | None
+
+
+@dataclass(frozen=True)
+class GameplayTelemetrySnapshot:
+    decisions_total: int
+    interventions_total: int
+    pocket_risk_total: int
+    tail_unreachable_total: int
+    deaths_wall: int
+    deaths_body: int
+    deaths_starvation: int
+    deaths_fill: int
+    deaths_other: int
+    deaths_early: int
+    deaths_mid: int
+    deaths_late: int
+    avg_death_confidence: float
+    decisions_mode_ppo: int
+    decisions_mode_escape: int
+    decisions_mode_space_fill: int
+    mode_switches_total: int
+    cycle_breaks_total: int
+    stuck_episodes_total: int
+    cycle_repeats_total: int
+    no_progress_steps: int
+    starvation_steps: int
+    starvation_limit: int
+    loop_escape_activations_total: int
+    loop_escape_steps_left: int
+    current_mode: str
+    last_switch_reason: str
+    last_death_reason: str
+
+
+class GameplayController:
+    _TAIL_REACHABLE_BONUS = 1200.0
+    _TAIL_UNREACHABLE_PENALTY = 1600.0
+    _CAPACITY_SHORTFALL_PENALTY = 60.0
+    _FOOD_DIST_WEIGHT = 0.02
+    _FOOD_DIST_WEIGHT_OPEN = 0.04
+    _FOOD_DIST_WEIGHT_CROWDED = 0.008
+    _CROWDED_FREE_RATIO_THRESHOLD = 0.35
+    _CROWDED_CAPACITY_PENALTY_SCALE = 1.4
+    _ESCAPE_FREE_RATIO_THRESHOLD = 0.50
+    _ESCAPE_LENGTH_RATIO_THRESHOLD = 0.16
+    _FOOD_PRESSURE_TRIGGER = 0.62
+    _FOOD_PROGRESS_SCORE_WEIGHT = 140.0
+    _FOOD_REVISIT_PENALTY = 24.0
+    _SHORTFALL_TOLERANCE_MAX = 3
+
+    def __init__(
+        self,
+        *,
+        game: GameLike,
+        agent: AgentLike,
+        settings: Settings,
+        obs_config: ObsConfig,
+        space_strategy_enabled: bool = True,
+    ) -> None:
+        self.game = game
+        self.agent = agent
+        self.settings = settings
+        self.obs_config = obs_config
+        self._debug_snapshot: AgentDebugSnapshot | None = None
+        self._decisions_total = 0
+        self._interventions_total = 0
+        self._pocket_risk_total = 0
+        self._tail_unreachable_total = 0
+        self._deaths_wall = 0
+        self._deaths_body = 0
+        self._deaths_starvation = 0
+        self._deaths_fill = 0
+        self._deaths_other = 0
+        self._deaths_early = 0
+        self._deaths_mid = 0
+        self._deaths_late = 0
+        self._death_confidences: deque[float] = deque(maxlen=120)
+        self._last_chosen_confidence: float | None = None
+        self._last_predicted_confidence: float | None = None
+        self._last_chosen_tail_reachable = True
+        self._last_capacity_shortfall = 0
+        self._space_strategy_enabled = bool(space_strategy_enabled)
+        self._escape_controller = EscapeController()
+        self._space_fill_controller = SpaceFillController()
+        self._dynamic_cfg: DynamicControlConfig = getattr(settings, "dynamic_control", DynamicControlConfig())
+        self._dynamic = DynamicControllerState()
+        self._last_score_seen = int(getattr(self.game, "score", 0))
+        self._last_action: int | None = None
+        self._recent_heads: deque[tuple[int, int]] = deque(maxlen=64)
+        self._mode_switches_total = 0
+        self._cycle_breaks_total = 0
+        self._stuck_episodes_total = 0
+        self._cycle_repeats_total = 0
+        self._loop_escape_activations_total = 0
+        self._loop_escape_steps_left = 0
+        self._loop_escape_cooldown_until = 0
+        self._recent_food_distances: deque[int] = deque(maxlen=96)
+        self._episode_stuck = False
+        self._decisions_mode_ppo = 0
+        self._decisions_mode_escape = 0
+        self._decisions_mode_space_fill = 0
+        self._decision_mode_now = ControlMode.PPO
+        self._debug_overlay_enabled = False
+        self._reachable_overlay_enabled = False
+        self._last_death_reason = "none"
+
+    def set_debug_options(self, *, debug_overlay: bool, reachable_overlay: bool) -> None:
+        self._debug_overlay_enabled = bool(debug_overlay)
+        self._reachable_overlay_enabled = bool(reachable_overlay)
+
+    def step(self, game_running: bool) -> None:
+        if not bool(game_running):
+            return
+        if self.game.game_over:
+            self._record_episode_end()
+            self._reset_dynamic_state()
+            self.agent.request_inference_sync()
+            self.game.reset()
+            self._last_score_seen = int(getattr(self.game, "score", 0))
+            return
+        if self._should_compute_agent_action():
+            self._apply_agent_control()
+        self.game.update()
+
+    def _should_compute_agent_action(self) -> bool:
+        will_advance = getattr(self.game, "will_advance_on_next_update", None)
+        if callable(will_advance):
+            try:
+                return bool(will_advance())
+            except Exception:
+                logger.debug("will_advance_on_next_update failed; defaulting to per-frame control", exc_info=True)
+        return True
+
+    def _apply_agent_control(self) -> None:
+        inference_available = getattr(self.agent, "is_inference_available", getattr(self.agent, "is_ready", False))
+        if callable(inference_available):
+            inference_available = inference_available()
+        if not bool(inference_available):
+            self._debug_snapshot = None
+            return
+        score_now = int(getattr(self.game, "score", 0))
+        if score_now > self._last_score_seen:
+            self._dynamic.last_food_step = int(self._decisions_total)
+            self._last_score_seen = score_now
+        if self.game.snake:
+            self._recent_heads.append((int(self.game.snake[0][0]), int(self.game.snake[0][1])))
+            food = tuple(self.game.food)
+            head = tuple(self.game.snake[0])
+            self._recent_food_distances.append(int(abs(head[0] - food[0]) + abs(head[1] - food[1])))
+        obs = build_observation(
+            board_cells=self.settings.board_cells,
+            snake=list(self.game.snake),
+            direction=self.game.direction,
+            food=self.game.food,
+            obs_config=self.obs_config,
+        )
+        action_probs: tuple[float, float, float] | None = None
+        debug_needed = bool(self._debug_overlay_enabled or self._reachable_overlay_enabled)
+        predict_with_probs = getattr(self.agent, "predict_action_with_probs", None)
+        action_masks = valid_action_mask(
+            self.settings.board_cells,
+            list(self.game.snake),
+            tuple(self.game.direction),
+        )
+        if debug_needed and callable(predict_with_probs):
+            try:
+                predicted_action, action_probs = predict_with_probs(obs, action_masks=action_masks)
+                predicted_action = int(predicted_action)
+            except Exception:
+                logger.exception("predict_action_with_probs failed; falling back to predict_action")
+                predicted_action = int(self.agent.predict_action(obs, action_masks=action_masks))
+                action_probs = None
+        else:
+            predicted_action = int(self.agent.predict_action(obs, action_masks=action_masks))
+        predicted_confidence = None
+        if action_probs is not None:
+            try:
+                idx = int(predicted_action)
+                if 0 <= idx < len(action_probs):
+                    predicted_confidence = float(action_probs[idx])
+            except Exception:
+                predicted_confidence = None
+        self._last_predicted_confidence = predicted_confidence
+        action = self._choose_safe_action(predicted_action)
+        self._record_decision(
+            predicted_action=predicted_action,
+            chosen_action=action,
+            action_probs=action_probs,
+        )
+        if debug_needed:
+            self._update_debug_snapshot(
+                predicted_action=predicted_action,
+                chosen_action=action,
+                action_probs=action_probs,
+                include_reachable_cells=bool(self._reachable_overlay_enabled),
+            )
+        else:
+            self._debug_snapshot = None
+        next_direction = action_to_direction(self.game.direction, action)
+        self.game.queue_direction(next_direction[0], next_direction[1])
+        self._last_action = int(action)
+
+    def draw_debug_overlay(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
+        snapshot = self._debug_snapshot
+        if snapshot is None:
+            return
+        cp = int(self.settings.cell_px)
+        ox = int(self.settings.board_offset_x)
+        oy = int(self.settings.board_offset_y)
+        head_cx = int(ox + (snapshot.head[0] * cp) + (cp // 2))
+        head_cy = int(oy + (snapshot.head[1] * cp) + (cp // 2))
+
+        panel_rect = pygame.Rect(ox + 8, oy + 74, 430, 124)
+        pygame.draw.rect(surface, (12, 12, 18), panel_rect, border_radius=6)
+        pygame.draw.rect(surface, (52, 90, 128), panel_rect, width=1, border_radius=6)
+
+        labels = {0: "S", 1: "L", 2: "R"}
+        for candidate in snapshot.candidates:
+            tx = int(ox + (candidate.cell[0] * cp) + (cp // 2))
+            ty = int(oy + (candidate.cell[1] * cp) + (cp // 2))
+            base_color = (245, 90, 90) if candidate.danger else (85, 190, 255)
+            width = 2
+            if candidate.action == snapshot.predicted_action:
+                base_color = (255, 210, 60)
+                width = 3
+            if candidate.action == snapshot.chosen_action:
+                base_color = (60, 235, 130)
+                width = 4
+            pygame.draw.line(surface, base_color, (head_cx, head_cy), (tx, ty), width=width)
+            if candidate.danger:
+                cell_rect = pygame.Rect(ox + (candidate.cell[0] * cp), oy + (candidate.cell[1] * cp), cp, cp)
+                pygame.draw.rect(surface, (245, 90, 90), cell_rect, width=2, border_radius=4)
+            tag = f"{labels.get(candidate.action, '?')} r={candidate.reachable_ratio:.2f}"
+            surface.blit(font.render(tag, True, base_color), (tx + 6, ty - 10))
+
+        caption = f"AI debug pred={labels.get(snapshot.predicted_action, '?')} used={labels.get(snapshot.chosen_action, '?')}"
+        surface.blit(font.render(caption, True, (220, 230, 255)), (panel_rect.x + 8, panel_rect.y + 8))
+        mode_line = f"Mode: {self.current_control_mode()}  reason: {self.last_mode_switch_reason()}"
+        surface.blit(font.render(mode_line, True, (190, 212, 240)), (panel_rect.x + 8, panel_rect.y + 58))
+        if snapshot.action_probs is not None:
+            p0, p1, p2 = snapshot.action_probs
+            probs_text = f"pi(S/L/R)=({p0:.2f}, {p1:.2f}, {p2:.2f})"
+            surface.blit(font.render(probs_text, True, (180, 210, 245)), (panel_rect.x + 8, panel_rect.y + 34))
+
+    def draw_reachable_overlay(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
+        snapshot = self._debug_snapshot
+        if snapshot is None:
+            return
+        cp = int(self.settings.cell_px)
+        ox = int(self.settings.board_offset_x)
+        oy = int(self.settings.board_offset_y)
+        alpha_surface = pygame.Surface((self.settings.window_px, self.settings.window_px), pygame.SRCALPHA)
+        colors = {0: (55, 215, 255, 56), 1: (255, 205, 65, 56), 2: (170, 100, 255, 56)}
+        highlight = {0: (55, 215, 255), 1: (255, 205, 65), 2: (170, 100, 255)}
+        for candidate in snapshot.candidates:
+            fill = colors.get(candidate.action, (120, 120, 120, 48))
+            stroke = highlight.get(candidate.action, (150, 150, 150))
+            for x, y in candidate.reachable_cells:
+                rect = pygame.Rect(int(x * cp), int(y * cp), cp, cp)
+                alpha_surface.fill(fill, rect)
+            cx = int(ox + (candidate.cell[0] * cp) + (cp // 2))
+            cy = int(oy + (candidate.cell[1] * cp) + (cp // 2))
+            label = f"{('S','L','R')[candidate.action]} area={len(candidate.reachable_cells)}"
+            surface.blit(font.render(label, True, stroke), (cx + 8, cy + 10))
+        surface.blit(alpha_surface, (ox, oy))
+        legend = "F4 reachable overlay  S=cyan  L=yellow  R=purple"
+        surface.blit(font.render(legend, True, (210, 220, 240)), (ox + 10, oy + 180))
+
+    def _choose_safe_action(self, proposed_action: int) -> int:
+        board_cells = int(self.settings.board_cells)
+        snake = list(self.game.snake)
+        direction = tuple(self.game.direction)
+        food = tuple(self.game.food)
+        board_total = max(1, int(board_cells * board_cells))
+        free_ratio = float(max(0, board_total - len(snake))) / float(board_total)
+        crowded = bool(self._space_strategy_enabled and free_ratio <= float(self._CROWDED_FREE_RATIO_THRESHOLD))
+        food_weight = float(self._FOOD_DIST_WEIGHT_CROWDED if crowded else (self._FOOD_DIST_WEIGHT_OPEN if self._space_strategy_enabled else self._FOOD_DIST_WEIGHT))
+        capacity_penalty_scale = float(self._CROWDED_CAPACITY_PENALTY_SCALE) if crowded else 1.0
+
+        proposed_eval = self._evaluate_action(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=int(proposed_action),
+            food_weight=food_weight,
+            capacity_penalty_scale=capacity_penalty_scale,
+        )
+        if not self.settings.agent_safety_override:
+            self._decision_mode_now = ControlMode.PPO
+            return int(proposed_action)
+
+        if not bool(self._dynamic_cfg.enable_dynamic_control):
+            action = self._legacy_safe_action(
+                proposed_action=int(proposed_action),
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+                proposed_eval=proposed_eval,
+            )
+            self._decision_mode_now = ControlMode.ESCAPE if action != int(proposed_action) else ControlMode.PPO
+            return int(action)
+
+        no_progress_steps = int(self._decisions_total - self._dynamic.last_food_step)
+        food_pressure = self._food_pressure(no_progress_steps=no_progress_steps)
+        cycle_repeat = self._register_cycle_state(snake=snake, direction=direction, board_cells=board_cells, free_ratio=free_ratio, proposed_eval=proposed_eval)
+        if cycle_repeat:
+            self._cycle_repeats_total += 1
+        starvation_ratio = self._starvation_progress_ratio()
+        if self._should_start_loop_escape(
+            cycle_repeat=cycle_repeat,
+            no_progress_steps=no_progress_steps,
+            starvation_ratio=starvation_ratio,
+        ):
+            self._start_loop_escape_burst(no_progress_steps=no_progress_steps, starvation_ratio=starvation_ratio)
+        proposed_viable = bool(proposed_eval is not None) and self._is_eval_viable(
+            board_cells=board_cells,
+            snake_len=len(snake),
+            tail_reachable=bool(proposed_eval[1]),
+            capacity_shortfall=int(proposed_eval[2]),
+            food_pressure=food_pressure,
+        )
+        # Trust high-confidence PPO decisions when they are viable and not near starvation pressure.
+        # This reduces controller over-intervention that can underperform PPO-only evaluation.
+        conf_threshold = float(getattr(self._dynamic_cfg, "ppo_confidence_trust_threshold", 1.0))
+        conf_pressure_max = float(getattr(self._dynamic_cfg, "ppo_confidence_trust_food_pressure_max", 0.0))
+        conf_min_free_ratio = float(getattr(self._dynamic_cfg, "ppo_confidence_trust_min_free_ratio", 0.0))
+        high_conf_ppo = bool(
+            self._last_predicted_confidence is not None
+            and float(self._last_predicted_confidence) >= conf_threshold
+        )
+        if (
+            proposed_viable
+            and high_conf_ppo
+            and float(food_pressure) <= conf_pressure_max
+            and float(free_ratio) >= conf_min_free_ratio
+        ):
+            self._decision_mode_now = ControlMode.PPO
+            self._dynamic.last_switch_reason = "ppo_conf_trust"
+            self._last_chosen_tail_reachable = True
+            self._last_capacity_shortfall = int(proposed_eval[2]) if proposed_eval is not None else 0
+            return int(proposed_action)
+        imminent_danger = bool(proposed_eval is None)
+        risk_override_trigger = bool(
+            imminent_danger
+            or cycle_repeat
+            or int(no_progress_steps) >= int(self._dynamic_cfg.no_progress_steps_escape)
+            or float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER)
+        )
+        # Avoid broad over-intervention: if PPO action is not strictly "viable" but
+        # risk pressure is still low, keep PPO action and monitor progression.
+        tail_unreachable = bool(proposed_eval is not None and not bool(proposed_eval[1]))
+        if (not bool(proposed_viable)) and (not risk_override_trigger) and (not tail_unreachable):
+            self._decision_mode_now = ControlMode.PPO
+            self._dynamic.last_switch_reason = "ppo_tolerate_low_risk"
+            if proposed_eval is not None:
+                self._last_chosen_tail_reachable = bool(proposed_eval[1])
+                self._last_capacity_shortfall = int(proposed_eval[2])
+            else:
+                self._last_chosen_tail_reachable = True
+                self._last_capacity_shortfall = 0
+            return int(proposed_action)
+        significant_risk = bool((not bool(proposed_viable)) and risk_override_trigger)
+        mode = self._select_mode(
+            significant_risk=significant_risk,
+            imminent_danger=imminent_danger,
+            cycle_repeat=cycle_repeat,
+            no_progress_steps=no_progress_steps,
+        )
+        self._decision_mode_now = mode
+
+        if (
+            mode == ControlMode.PPO
+            and proposed_viable
+            and int(self._loop_escape_steps_left) <= 0
+        ):
+            self._last_chosen_tail_reachable = True
+            self._last_capacity_shortfall = int(proposed_eval[2]) if proposed_eval is not None else 0
+            return int(proposed_action)
+
+        action = None
+        if self._loop_escape_steps_left > 0:
+            allow_loop_escape = bool(mode != ControlMode.PPO) or int(no_progress_steps) >= int(self._loop_escape_hard_trigger())
+            if allow_loop_escape:
+                action = self._choose_loop_escape_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    food_weight=food_weight,
+                    capacity_penalty_scale=capacity_penalty_scale,
+                )
+                if action is not None:
+                    self._loop_escape_steps_left = max(0, int(self._loop_escape_steps_left) - 1)
+                    self._dynamic.last_switch_reason = "loop_escape_active"
+        if action is None and not imminent_danger and float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER):
+            action = self._best_safe_action(
+                proposed_action=int(proposed_action),
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+            if mode != ControlMode.PPO:
+                self._dynamic.last_switch_reason = "food_pressure"
+        if action is None and mode == ControlMode.ESCAPE:
+            action = self._escape_controller.choose_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+            )
+        elif action is None and mode == ControlMode.SPACE_FILL:
+            if cycle_repeat:
+                action = self._choose_cycle_break_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    food_weight=food_weight,
+                    capacity_penalty_scale=capacity_penalty_scale,
+                )
+            action = self._space_fill_controller.choose_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                prev_action=self._last_action,
+                config=self._dynamic_cfg,
+            ) if action is None else action
+            if action is None:
+                action = self._escape_controller.choose_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                )
+        if action is None:
+            action = self._best_safe_action(
+                proposed_action=int(proposed_action),
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+        chosen_eval = self._evaluate_action(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=int(action),
+            food_weight=food_weight,
+            capacity_penalty_scale=capacity_penalty_scale,
+        )
+        if chosen_eval is not None:
+            _score, tail_reachable, capacity_shortfall = chosen_eval
+            self._last_chosen_tail_reachable = bool(tail_reachable)
+            self._last_capacity_shortfall = int(capacity_shortfall)
+        return int(action)
+
+    def _choose_loop_escape_action(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+    ) -> int | None:
+        if not snake:
+            return None
+        head = snake[0]
+        current_food_dist = abs(head[0] - food[0]) + abs(head[1] - food[1])
+        visit_counts: dict[tuple[int, int], int] = {}
+        for point in self._recent_heads:
+            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+
+        best_action: int | None = None
+        best_key: tuple[float, ...] | None = None
+        for action in (0, 1, 2):
+            eval_result = self._evaluate_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=action,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+            if eval_result is None:
+                continue
+            score, tail_ok, shortfall = eval_result
+            candidate_head = next_head(head, action_to_direction(direction, int(action)))
+            revisit_count = int(visit_counts.get(candidate_head, 0))
+            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            food_progress = int(current_food_dist - next_food_dist)
+            turn_change = 1 if self._last_action is not None and int(action) != int(self._last_action) else 0
+            key = (
+                float(food_progress),
+                float(-revisit_count),
+                float(1 if tail_ok else 0),
+                float(-int(shortfall)),
+                float(turn_change),
+                float(score),
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_action = int(action)
+        return best_action
+
+    def _choose_cycle_break_action(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+    ) -> int | None:
+        if not snake:
+            return None
+        head = snake[0]
+        current_food_dist = abs(head[0] - food[0]) + abs(head[1] - food[1])
+        visit_counts: dict[tuple[int, int], int] = {}
+        for point in self._recent_heads:
+            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+
+        best_action: int | None = None
+        best_key: tuple[float, ...] | None = None
+        for action in (0, 1, 2):
+            eval_result = self._evaluate_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=action,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+            if eval_result is None:
+                continue
+            score, tail_ok, shortfall = eval_result
+            candidate_head = next_head(head, action_to_direction(direction, int(action)))
+            revisit_count = int(visit_counts.get(candidate_head, 0))
+            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            food_progress = int(current_food_dist - next_food_dist)
+            turn_change = 1 if self._last_action is not None and int(action) != int(self._last_action) else 0
+            key = (
+                float(-revisit_count),
+                float(1 if tail_ok else 0),
+                float(-int(shortfall)),
+                float(food_progress),
+                float(score),
+                float(turn_change),
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_action = int(action)
+        return best_action
+
+    def _legacy_safe_action(
+        self,
+        *,
+        proposed_action: int,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+        proposed_eval: tuple[float, bool, int] | None,
+    ) -> int:
+        if self._should_use_escape_controller(
+            snake=snake,
+            board_cells=board_cells,
+            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+            proposed_eval=proposed_eval,
+        ):
+            action = self._escape_controller.choose_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+            )
+            if action is not None:
+                return int(action)
+        if proposed_eval is not None:
+            _s, tail_ok, shortfall = proposed_eval
+            if self._is_eval_viable(
+                board_cells=board_cells,
+                snake_len=len(snake),
+                tail_reachable=bool(tail_ok),
+                capacity_shortfall=int(shortfall),
+                food_pressure=self._food_pressure(),
+            ):
+                return int(proposed_action)
+        return self._best_safe_action(
+            proposed_action=proposed_action,
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            food_weight=food_weight,
+            capacity_penalty_scale=capacity_penalty_scale,
+        )
+
+    def _best_safe_action(
+        self,
+        *,
+        proposed_action: int,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+    ) -> int:
+        current_food_dist = abs(snake[0][0] - food[0]) + abs(snake[0][1] - food[1])
+        food_pressure = self._food_pressure()
+        visit_counts: dict[tuple[int, int], int] = {}
+        for point in self._recent_heads:
+            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        best_action = int(proposed_action)
+        best_key: tuple[float, ...] | None = None
+        for action in (0, 1, 2):
+            eval_result = self._evaluate_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=action,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+            if eval_result is None:
+                continue
+            score, tail_ok, shortfall = eval_result
+            candidate_head = next_head(snake[0], action_to_direction(direction, int(action)))
+            revisit_count = int(visit_counts.get(candidate_head, 0))
+            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            food_progress = int(current_food_dist - next_food_dist)
+            viable = self._is_eval_viable(
+                board_cells=board_cells,
+                snake_len=len(snake),
+                tail_reachable=bool(tail_ok),
+                capacity_shortfall=int(shortfall),
+                food_pressure=food_pressure,
+            )
+            key = (
+                float(1 if viable else 0),
+                float(1 if candidate_head == food else 0),
+                float(food_progress if food_pressure >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
+                float(score) + (float(food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
+                float(-revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
+                float(-next_food_dist),
+                float(1 if int(action) == int(proposed_action) else 0),
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_action = int(action)
+        return int(best_action)
+
+    def _register_cycle_state(
+        self,
+        *,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        board_cells: int,
+        free_ratio: float,
+        proposed_eval: tuple[float, bool, int] | None,
+    ) -> bool:
+        if not snake:
+            return False
+        head = snake[0]
+        tail = snake[-1]
+        safe_sig = []
+        for action in (0, 1, 2):
+            cand_dir = action_to_direction(direction, action)
+            cand_head = next_head(head, cand_dir)
+            safe_sig.append(0 if is_danger(board_cells, snake, cand_head) else 1)
+        tail_rel = (
+            -1 if tail[0] < head[0] else (1 if tail[0] > head[0] else 0),
+            -1 if tail[1] < head[1] else (1 if tail[1] > head[1] else 0),
+        )
+        risk_bit = 1
+        if proposed_eval is not None:
+            risk_bit = 0 if self._is_eval_viable(
+                board_cells=board_cells,
+                snake_len=len(snake),
+                tail_reachable=bool(proposed_eval[1]),
+                capacity_shortfall=int(proposed_eval[2]),
+                food_pressure=self._food_pressure(),
+            ) else 1
+        bucket = int(free_ratio * 10.0)
+        cycle_hash = hash((head, direction, tuple(safe_sig), tail_rel, risk_bit, bucket))
+        window = self._dynamic.cycle_window
+        counts = self._dynamic.cycle_hash_counts
+        maxlen = max(6, int(self._dynamic_cfg.cycle_window_steps))
+        if len(window) >= maxlen:
+            old = window.popleft()
+            old_count = int(counts.get(old, 0))
+            if old_count <= 1:
+                counts.pop(old, None)
+            else:
+                counts[old] = int(old_count - 1)
+        window.append(cycle_hash)
+        counts[cycle_hash] = int(counts.get(cycle_hash, 0) + 1)
+        return int(counts[cycle_hash]) >= int(self._dynamic_cfg.cycle_repeat_threshold)
+
+    def _select_mode(
+        self,
+        *,
+        significant_risk: bool,
+        imminent_danger: bool,
+        cycle_repeat: bool,
+        no_progress_steps: int,
+    ) -> ControlMode:
+        current = self._dynamic.current_mode
+        desired = current
+        reason = "hold"
+        cycle_break_counted = False
+        if current == ControlMode.PPO:
+            if significant_risk:
+                desired = ControlMode.ESCAPE
+                reason = "risk"
+        elif current == ControlMode.ESCAPE:
+            if imminent_danger:
+                desired = ControlMode.SPACE_FILL
+                reason = "imminent_danger"
+            elif cycle_repeat:
+                desired = ControlMode.SPACE_FILL
+                reason = "cycle_repeat"
+            elif no_progress_steps >= int(self._dynamic_cfg.no_progress_steps_escape):
+                desired = ControlMode.SPACE_FILL
+                reason = "no_progress_escape"
+            elif not significant_risk and no_progress_steps <= int(self._dynamic_cfg.risk_recovery_window):
+                desired = ControlMode.PPO
+                reason = "risk_cleared"
+        else:  # SPACE_FILL
+            if imminent_danger:
+                desired = ControlMode.ESCAPE
+                reason = "imminent_danger"
+            elif not significant_risk and no_progress_steps <= int(self._dynamic_cfg.risk_recovery_window):
+                desired = ControlMode.PPO
+                reason = "space_fill_recovered"
+            elif cycle_repeat and no_progress_steps >= int(self._dynamic_cfg.no_progress_steps_space_fill):
+                self._cycle_breaks_total += 1
+                cycle_break_counted = True
+                self._episode_stuck = True
+                reason = "space_fill_cycle_break"
+
+        step_now = int(self._decisions_total)
+        if desired != current and step_now < int(self._dynamic.cooldown_until_step) and not imminent_danger:
+            desired = current
+        if desired != current:
+            self._mode_switches_total += 1
+            self._dynamic.current_mode = desired
+            self._dynamic.mode_enter_step = step_now
+            self._dynamic.last_switch_reason = str(reason)
+            self._dynamic.cooldown_until_step = int(step_now + int(self._dynamic_cfg.mode_switch_cooldown_steps))
+            if ("cycle" in reason or "no_progress" in reason) and not bool(cycle_break_counted):
+                self._cycle_breaks_total += 1
+                self._episode_stuck = True
+        return self._dynamic.current_mode
+
+    def _should_use_escape_controller(
+        self,
+        *,
+        snake: list[tuple[int, int]],
+        board_cells: int,
+        free_ratio: float,
+        proposed_eval: tuple[float, bool, int] | None,
+    ) -> bool:
+        if not bool(self._space_strategy_enabled):
+            return False
+        if proposed_eval is None:
+            return True
+        _score, tail_reachable, capacity_shortfall = proposed_eval
+        board_total = max(1, int(board_cells * board_cells))
+        length_ratio = float(len(snake)) / float(board_total)
+        crowded_or_long = (
+            float(free_ratio) <= float(self._ESCAPE_FREE_RATIO_THRESHOLD)
+            or float(length_ratio) >= float(self._ESCAPE_LENGTH_RATIO_THRESHOLD)
+        )
+        return bool(
+            crowded_or_long
+            and not self._is_eval_viable(
+                board_cells=board_cells,
+                snake_len=len(snake),
+                tail_reachable=bool(tail_reachable),
+                capacity_shortfall=int(capacity_shortfall),
+                food_pressure=self._food_pressure(),
+            )
+        )
+
+    def _evaluate_action(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        action: int,
+        food_weight: float,
+        capacity_penalty_scale: float,
+    ) -> tuple[float, bool, int] | None:
+        head = snake[0]
+        candidate_direction = action_to_direction(direction, int(action))
+        candidate_head = next_head(head, candidate_direction)
+        if is_danger(board_cells, snake, candidate_head):
+            return None
+        simulated_snake = self._simulate_next_snake(snake, candidate_head, food)
+        reachable = self._reachable_space(board_cells, simulated_snake, candidate_head)
+        tail_reachable = self._tail_is_reachable(board_cells, simulated_snake)
+        capacity_shortfall = max(0, len(simulated_snake) - reachable)
+        food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+        score = float(reachable) - (float(food_weight) * float(food_dist))
+        board_total = max(1, int(board_cells * board_cells))
+        length_ratio = float(len(simulated_snake)) / float(board_total)
+        food_pressure = self._food_pressure()
+        tail_penalty_scale = max(
+            0.45,
+            min(
+                1.25,
+                (0.45 + (0.9 * float(length_ratio)) + (0.25 * max(0.0, float(food_pressure) - 0.5))),
+            ),
+        )
+        if tail_reachable:
+            score += self._TAIL_REACHABLE_BONUS
+        else:
+            score -= self._TAIL_UNREACHABLE_PENALTY * float(tail_penalty_scale)
+        if capacity_shortfall > 0:
+            score -= self._CAPACITY_SHORTFALL_PENALTY * float(capacity_penalty_scale) * float(capacity_shortfall)
+        depth = max(1, int(getattr(self._dynamic_cfg, "lookahead_depth", 3)))
+        lookahead = self._lookahead_viability(
+            board_cells=board_cells,
+            snake=simulated_snake,
+            direction=candidate_direction,
+            food=food,
+            depth=depth,
+        )
+        score += float(getattr(self._dynamic_cfg, "lookahead_weight", 0.0)) * float(lookahead)
+        return float(score), bool(tail_reachable), int(capacity_shortfall)
+
+    def _food_pressure(self, *, no_progress_steps: int | None = None) -> float:
+        starvation_pressure = self._starvation_progress_ratio()
+        steps_since_food = (
+            max(0, int(no_progress_steps))
+            if no_progress_steps is not None
+            else int(max(0, self._decisions_total - self._dynamic.last_food_step))
+        )
+        soft_trigger = max(1, int(self._dynamic_cfg.no_progress_steps_escape))
+        hard_trigger = max(soft_trigger + 1, int(self._dynamic_cfg.no_progress_steps_space_fill))
+        if steps_since_food <= soft_trigger:
+            no_progress_pressure = 0.0
+        else:
+            no_progress_pressure = min(
+                1.0,
+                float(steps_since_food - soft_trigger) / float(max(1, hard_trigger - soft_trigger)),
+            )
+        return float(max(0.0, min(1.0, max(float(starvation_pressure), float(no_progress_pressure)))))
+
+    def _capacity_shortfall_limit(self, *, board_cells: int, snake_len: int, food_pressure: float) -> int:
+        board_total = max(1, int(board_cells * board_cells))
+        length_ratio = float(snake_len) / float(board_total)
+        limit = 0
+        if length_ratio >= 0.08:
+            limit = 1
+        if length_ratio >= 0.20:
+            limit = 2
+        if float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER):
+            limit += 1
+        return int(min(int(self._SHORTFALL_TOLERANCE_MAX), int(limit)))
+
+    def _is_eval_viable(
+        self,
+        *,
+        board_cells: int,
+        snake_len: int,
+        tail_reachable: bool,
+        capacity_shortfall: int,
+        food_pressure: float,
+    ) -> bool:
+        if not bool(tail_reachable):
+            return False
+        limit = self._capacity_shortfall_limit(
+            board_cells=board_cells,
+            snake_len=snake_len,
+            food_pressure=food_pressure,
+        )
+        return int(capacity_shortfall) <= int(limit)
+
+    def _lookahead_viability(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        depth: int,
+    ) -> float:
+        if depth <= 0 or not snake:
+            return 1.0
+        head = snake[0]
+        children: list[tuple[list[tuple[int, int]], tuple[int, int]]] = []
+        for action in (0, 1, 2):
+            next_direction = action_to_direction(direction, action)
+            candidate_head = next_head(head, next_direction)
+            if is_danger(board_cells, snake, candidate_head):
+                continue
+            children.append(
+                (
+                    self._simulate_next_snake(snake, candidate_head, food),
+                    next_direction,
+                )
+            )
+        if not children:
+            return 0.0
+        if depth <= 1:
+            return float(len(children)) / 3.0
+        branch_score = float(len(children)) / 3.0
+        child_scores = [
+            self._lookahead_viability(
+                board_cells=board_cells,
+                snake=next_snake,
+                direction=next_direction,
+                food=food,
+                depth=int(depth - 1),
+            )
+            for next_snake, next_direction in children
+        ]
+        best_future = max(child_scores) if child_scores else 0.0
+        return float(max(0.0, min(1.0, (0.45 * branch_score) + (0.55 * float(best_future)))))
+
+    def set_space_strategy_enabled(self, enabled: bool) -> None:
+        self._space_strategy_enabled = bool(enabled)
+
+    def is_space_strategy_enabled(self) -> bool:
+        return bool(self._space_strategy_enabled)
+
+    def current_control_mode(self) -> str:
+        return str(self._dynamic.current_mode.value)
+
+    def last_mode_switch_reason(self) -> str:
+        return str(self._dynamic.last_switch_reason)
+
+    def _update_debug_snapshot(
+        self,
+        *,
+        predicted_action: int,
+        chosen_action: int,
+        action_probs: tuple[float, float, float] | None,
+        include_reachable_cells: bool,
+    ) -> None:
+        board_cells = int(self.settings.board_cells)
+        snake = list(self.game.snake)
+        direction = tuple(self.game.direction)
+        food = tuple(self.game.food)
+        head = snake[0]
+        total = float(board_cells * board_cells)
+        candidates: list[CandidateDebug] = []
+        for action in (0, 1, 2):
+            candidate_direction = action_to_direction(direction, action)
+            candidate_head = next_head(head, candidate_direction)
+            danger = bool(is_danger(board_cells, snake, candidate_head))
+            reachable_ratio = 0.0
+            reachable_cells: tuple[tuple[int, int], ...] = ()
+            if not danger:
+                simulated = self._simulate_next_snake(snake, candidate_head, food)
+                if include_reachable_cells:
+                    reachable = self._reachable_cells(board_cells, simulated, candidate_head)
+                    reachable_ratio = float(len(reachable)) / total
+                    reachable_cells = tuple(sorted(reachable))
+                else:
+                    reachable_count = self._reachable_space(board_cells, simulated, candidate_head)
+                    reachable_ratio = float(reachable_count) / total
+            candidates.append(
+                CandidateDebug(
+                    action=int(action),
+                    cell=(int(candidate_head[0]), int(candidate_head[1])),
+                    danger=bool(danger),
+                    reachable_ratio=float(max(0.0, min(1.0, reachable_ratio))),
+                    reachable_cells=reachable_cells,
+                )
+            )
+        self._debug_snapshot = AgentDebugSnapshot(
+            head=(int(head[0]), int(head[1])),
+            predicted_action=int(predicted_action),
+            chosen_action=int(chosen_action),
+            candidates=(candidates[0], candidates[1], candidates[2]),
+            action_probs=action_probs,
+        )
+
+    @staticmethod
+    def _simulate_next_snake(
+        snake: list[tuple[int, int]],
+        new_head: tuple[int, int],
+        food: tuple[int, int],
+    ) -> list[tuple[int, int]]:
+        return simulate_next_snake(snake, new_head, food)
+
+    @staticmethod
+    def _reachable_space(board_cells: int, snake_after_move: list[tuple[int, int]], start: tuple[int, int]) -> int:
+        return int(reachable_cell_count(board_cells, snake_after_move, start))
+
+    @staticmethod
+    def _reachable_cells(board_cells: int, snake_after_move: list[tuple[int, int]], start: tuple[int, int]) -> set[tuple[int, int]]:
+        return board_reachable_cells(board_cells, snake_after_move, start)
+
+    @staticmethod
+    def _tail_is_reachable(board_cells: int, snake_after_move: list[tuple[int, int]]) -> bool:
+        return bool(board_tail_is_reachable(board_cells, snake_after_move))
+
+    def telemetry_snapshot(self) -> GameplayTelemetrySnapshot:
+        avg_conf = float(sum(self._death_confidences)) / float(len(self._death_confidences)) if self._death_confidences else 0.0
+        starvation_steps = int(getattr(self.game, "steps_without_food", 0))
+        starvation_limit = int(getattr(self.game, "starvation_limit", lambda: 0)())
+        no_progress_steps = int(max(0, self._decisions_total - self._dynamic.last_food_step))
+        return GameplayTelemetrySnapshot(
+            decisions_total=int(self._decisions_total),
+            interventions_total=int(self._interventions_total),
+            pocket_risk_total=int(self._pocket_risk_total),
+            tail_unreachable_total=int(self._tail_unreachable_total),
+            deaths_wall=int(self._deaths_wall),
+            deaths_body=int(self._deaths_body),
+            deaths_starvation=int(self._deaths_starvation),
+            deaths_fill=int(self._deaths_fill),
+            deaths_other=int(self._deaths_other),
+            deaths_early=int(self._deaths_early),
+            deaths_mid=int(self._deaths_mid),
+            deaths_late=int(self._deaths_late),
+            avg_death_confidence=float(avg_conf),
+            decisions_mode_ppo=int(self._decisions_mode_ppo),
+            decisions_mode_escape=int(self._decisions_mode_escape),
+            decisions_mode_space_fill=int(self._decisions_mode_space_fill),
+            mode_switches_total=int(self._mode_switches_total),
+            cycle_breaks_total=int(self._cycle_breaks_total),
+            stuck_episodes_total=int(self._stuck_episodes_total),
+            cycle_repeats_total=int(self._cycle_repeats_total),
+            no_progress_steps=int(no_progress_steps),
+            starvation_steps=int(starvation_steps),
+            starvation_limit=int(starvation_limit),
+            loop_escape_activations_total=int(self._loop_escape_activations_total),
+            loop_escape_steps_left=int(self._loop_escape_steps_left),
+            current_mode=str(self.current_control_mode()),
+            last_switch_reason=str(self.last_mode_switch_reason()),
+            last_death_reason=str(self._last_death_reason),
+        )
+
+    def reset_episode_tracking(self) -> None:
+        self._reset_dynamic_state()
+        self._last_score_seen = int(getattr(self.game, "score", 0))
+        self._debug_snapshot = None
+
+    def _should_start_loop_escape(
+        self,
+        *,
+        cycle_repeat: bool,
+        no_progress_steps: int,
+        starvation_ratio: float,
+    ) -> bool:
+        if not bool(cycle_repeat):
+            return False
+        if self._loop_escape_steps_left > 0:
+            return False
+        if int(self._decisions_total) < int(self._loop_escape_cooldown_until):
+            return False
+        no_progress_floor = int(self._dynamic_cfg.no_progress_steps_escape)
+        no_progress_soft = max(
+            no_progress_floor,
+            int(0.75 * float(self._dynamic_cfg.no_progress_steps_space_fill)),
+        )
+        if int(no_progress_steps) < no_progress_soft:
+            return False
+        hard_no_progress_trigger = self._loop_escape_hard_trigger()
+        if int(no_progress_steps) >= int(hard_no_progress_trigger):
+            return True
+        starvation_trigger = float(self._dynamic_cfg.loop_escape_starvation_trigger_ratio)
+        if float(starvation_ratio) >= starvation_trigger:
+            return True
+        return bool(self._food_distance_stalled())
+
+    def _loop_escape_hard_trigger(self) -> int:
+        return max(
+            int(self._dynamic_cfg.no_progress_steps_space_fill) * 2,
+            int(self._dynamic_cfg.no_progress_steps_escape) * 3,
+        )
+
+    def _start_loop_escape_burst(self, *, no_progress_steps: int, starvation_ratio: float) -> None:
+        base = max(4, int(self._dynamic_cfg.loop_escape_base_steps))
+        max_steps = max(base, int(self._dynamic_cfg.loop_escape_max_steps))
+        floor = max(1, int(self._dynamic_cfg.no_progress_steps_escape))
+        no_progress_extra = max(0, int(no_progress_steps - floor)) // max(1, floor // 2)
+        starvation_extra = int(max(0.0, float(starvation_ratio)) * 12.0)
+        steps = min(max_steps, max(base, int(base + no_progress_extra + starvation_extra)))
+        self._loop_escape_steps_left = int(steps)
+        self._loop_escape_activations_total += 1
+        cooldown = max(1, int(self._dynamic_cfg.loop_escape_cooldown_steps))
+        self._loop_escape_cooldown_until = int(self._decisions_total + steps + cooldown)
+        self._dynamic.last_switch_reason = "loop_escape_start"
+
+    def _food_distance_stalled(self) -> bool:
+        window = max(6, int(self._dynamic_cfg.loop_escape_stall_window))
+        if len(self._recent_food_distances) < window:
+            return False
+        recent = list(self._recent_food_distances)[-window:]
+        spread = int(max(recent) - min(recent))
+        return spread <= 1
+
+    def _starvation_progress_ratio(self) -> float:
+        limit_fn = getattr(self.game, "starvation_limit", None)
+        if not callable(limit_fn):
+            return 0.0
+        limit = max(1, int(limit_fn()))
+        steps = max(0, int(getattr(self.game, "steps_without_food", 0)))
+        return float(steps) / float(limit)
+
+    def _record_decision(
+        self,
+        *,
+        predicted_action: int,
+        chosen_action: int,
+        action_probs: tuple[float, float, float] | None,
+    ) -> None:
+        self._decisions_total += 1
+        if self._decision_mode_now == ControlMode.PPO:
+            self._decisions_mode_ppo += 1
+        elif self._decision_mode_now == ControlMode.ESCAPE:
+            self._decisions_mode_escape += 1
+        else:
+            self._decisions_mode_space_fill += 1
+        if int(predicted_action) != int(chosen_action):
+            self._interventions_total += 1
+        if not bool(self._last_chosen_tail_reachable):
+            self._tail_unreachable_total += 1
+        if int(self._last_capacity_shortfall) > 0:
+            self._pocket_risk_total += 1
+        self._last_chosen_confidence = None
+        if action_probs is None:
+            return
+        idx = int(chosen_action)
+        if 0 <= idx <= 2:
+            self._last_chosen_confidence = float(action_probs[idx])
+
+    def _record_episode_end(self) -> None:
+        reason = str(self.game.death_reason or "other")
+        self._last_death_reason = reason
+        if reason == "wall":
+            self._deaths_wall += 1
+        elif reason == "body":
+            self._deaths_body += 1
+        elif reason == "starvation":
+            self._deaths_starvation += 1
+        elif reason == "fill":
+            self._deaths_fill += 1
+        else:
+            self._deaths_other += 1
+        board_total = max(1, int(self.settings.board_cells * self.settings.board_cells))
+        length_ratio = float(len(self.game.snake)) / float(board_total)
+        if length_ratio < 0.33:
+            self._deaths_early += 1
+        elif length_ratio < 0.66:
+            self._deaths_mid += 1
+        else:
+            self._deaths_late += 1
+        count_as_stuck = bool(self._episode_stuck) and reason not in ("starvation", "fill")
+        if count_as_stuck:
+            self._stuck_episodes_total += 1
+        self._episode_stuck = False
+        if self._last_chosen_confidence is not None:
+            self._death_confidences.append(float(self._last_chosen_confidence))
+
+    def _reset_dynamic_state(self) -> None:
+        self._dynamic = DynamicControllerState()
+        self._last_action = None
+        self._last_predicted_confidence = None
+        self._recent_heads.clear()
+        self._recent_food_distances.clear()
+        self._loop_escape_steps_left = 0
+        self._loop_escape_cooldown_until = 0
+        self._decision_mode_now = ControlMode.PPO
+        self._episode_stuck = False

@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from snake_frame.holdout_eval import HoldoutEvalController
+from snake_frame.settings import ObsConfig, RewardConfig, Settings
+
+
+class _FakeAgent:
+    def __init__(self) -> None:
+        self.is_ready = True
+        self.is_inference_available = True
+        self.is_sync_pending = False
+        self._train_vecnormalize = None
+        self.load_calls = 0
+
+    def evaluate_holdout(self, *, seeds, max_steps: int = 5000, model_selector: str | None = None):
+        _ = (max_steps, model_selector)
+        return [int((s % 17) + 10) for s in seeds]
+
+    def load_if_exists_detailed(self, selector: str | None = None):
+        _ = selector
+        self.load_calls += 1
+        return type("R", (), {"ok": True})()
+
+    def predict_action(self, _obs, action_masks=None) -> int:
+        _ = action_masks
+        return 0
+
+    def predict_action_with_probs(self, _obs, action_masks=None):
+        _ = action_masks
+        return 0, (0.7, 0.2, 0.1)
+
+
+class TestHoldoutEval(unittest.TestCase):
+    def _wait(self, controller: HoldoutEvalController, timeout_s: float = 3.0) -> str | None:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            msg = controller.poll_completion()
+            if msg is not None:
+                return msg
+            time.sleep(0.01)
+        return None
+
+    def test_ppo_only_writes_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctl = HoldoutEvalController(
+                agent=_FakeAgent(),
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            self.assertTrue(
+                ctl.start(
+                    mode=HoldoutEvalController.MODE_PPO_ONLY,
+                    seeds=[17001, 17002, 17003],
+                    max_steps=500,
+                    model_selector="best",
+                )
+            )
+            msg = self._wait(ctl)
+            self.assertIsNotNone(msg)
+            self.assertIn("Holdout eval done", str(msg))
+            latest = Path(tmpdir) / "latest_summary.json"
+            self.assertTrue(latest.exists())
+
+    def test_controller_mode_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctl = HoldoutEvalController(
+                agent=_FakeAgent(),
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            self.assertTrue(
+                ctl.start(
+                    mode=HoldoutEvalController.MODE_CONTROLLER_ON,
+                    seeds=[17001],
+                    max_steps=300,
+                    model_selector="best",
+                )
+            )
+            msg = self._wait(ctl)
+            self.assertIsNotNone(msg)
+            self.assertNotIn("failed", str(msg).lower())
+
+    def test_training_active_does_not_start_or_reload_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _FakeAgent()
+            agent._train_vecnormalize = object()
+            ctl = HoldoutEvalController(
+                agent=agent,
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            started = ctl.start(
+                mode=HoldoutEvalController.MODE_PPO_ONLY,
+                seeds=[17001, 17002],
+                max_steps=300,
+                model_selector="best",
+            )
+            self.assertFalse(started)
+            self.assertEqual(int(agent.load_calls), 0)
+
+    def test_start_rejected_when_training_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = _FakeAgent()
+            agent._train_vecnormalize = object()
+            ctl = HoldoutEvalController(
+                agent=agent,
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            started = ctl.start(
+                mode=HoldoutEvalController.MODE_PPO_ONLY,
+                seeds=[17001, 17002],
+                max_steps=300,
+                model_selector="best",
+            )
+            self.assertFalse(started)
+            snap = ctl.snapshot()
+            self.assertFalse(bool(snap.active))
+            self.assertEqual(str(snap.last_error), "training_active")
+
+
+if __name__ == "__main__":
+    unittest.main()

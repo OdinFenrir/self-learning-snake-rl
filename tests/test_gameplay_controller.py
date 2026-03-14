@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import patch
+
+from snake_frame.gameplay_controller import ControlMode, GameplayController
+from snake_frame.settings import ObsConfig, Settings
+
+
+class _FakeGame:
+    def __init__(self) -> None:
+        self.game_over = False
+        self.snake = [(10, 10), (9, 10), (8, 10)]
+        self.direction = (1, 0)
+        self.food = (14, 10)
+        self.death_reason = "none"
+        self.steps_without_food = 0
+        self.queued: list[tuple[int, int]] = []
+        self.reset_called = False
+        self.update_called = False
+        self.advance_next = True
+
+    def queue_direction(self, dx: int, dy: int) -> None:
+        self.queued.append((int(dx), int(dy)))
+
+    def reset(self) -> None:
+        self.reset_called = True
+
+    def update(self) -> None:
+        self.update_called = True
+
+    def starvation_limit(self) -> int:
+        return 800
+
+    def will_advance_on_next_update(self) -> bool:
+        return bool(self.advance_next)
+
+
+class _FakeAgent:
+    def __init__(self) -> None:
+        self.is_ready = False
+        self.is_inference_available = False
+        self.is_sync_pending = False
+        self.sync_requested = False
+        self.predicted_action = 0
+        self.predict_calls = 0
+        self.predict_with_probs_calls = 0
+
+    def request_inference_sync(self) -> None:
+        self.sync_requested = True
+
+    def predict_action(self, _obs, action_masks=None) -> int:
+        _ = action_masks
+        self.predict_calls += 1
+        return int(self.predicted_action)
+
+    def predict_action_with_probs(self, _obs, action_masks=None):
+        _ = action_masks
+        self.predict_with_probs_calls += 1
+        return int(self.predicted_action), (0.34, 0.33, 0.33)
+
+
+class TestGameplayController(unittest.TestCase):
+    def test_step_ignores_when_not_running(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.step(False)
+        self.assertFalse(game.update_called)
+        self.assertFalse(game.reset_called)
+
+    def test_step_resets_when_game_over(self) -> None:
+        game = _FakeGame()
+        game.game_over = True
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(agent.sync_requested)
+        self.assertTrue(game.reset_called)
+        self.assertFalse(game.update_called)
+
+    def test_step_updates_and_controls_when_ready(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 2  # turn right
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(game.update_called)
+        self.assertTrue(len(game.queued) >= 1)
+
+    def test_safety_override_avoids_immediate_collision(self) -> None:
+        game = _FakeGame()
+        game.snake = [(19, 10), (18, 10), (17, 10)]
+        game.direction = (1, 0)
+        game.food = (19, 9)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0  # straight would hit wall
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(game.update_called)
+        self.assertTrue(game.queued)
+        self.assertNotEqual(game.queued[-1], (1, 0))
+
+    def test_safety_override_does_not_change_safe_agent_action(self) -> None:
+        game = _FakeGame()
+        game.snake = [(10, 10), (9, 10), (8, 10)]
+        game.direction = (1, 0)
+        game.food = (14, 10)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(game.queued)
+        self.assertEqual(game.queued[-1], (1, 0))
+
+    def test_safety_override_prioritizes_tail_reachability(self) -> None:
+        game = _FakeGame()
+        game.snake = [(10, 10), (9, 10), (8, 10), (7, 10)]
+        game.direction = (1, 0)
+        game.food = (14, 10)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+
+        # Force all options to appear equally reachable, but mark straight as tail-unreachable.
+        with (
+            patch.object(ctrl, "_reachable_space", return_value=40),
+            patch.object(
+                ctrl,
+                "_tail_is_reachable",
+                side_effect=lambda _cells, snake_after_move: snake_after_move[0] != (11, 10),
+            ),
+        ):
+            ctrl.step(True)
+        self.assertTrue(game.queued)
+        self.assertNotEqual(game.queued[-1], (1, 0))
+
+    def test_telemetry_tracks_interventions_and_deaths(self) -> None:
+        game = _FakeGame()
+        game.snake = [(19, 10), (18, 10), (17, 10)]
+        game.direction = (1, 0)
+        game.food = (10, 10)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl.step(True)
+        snap = ctrl.telemetry_snapshot()
+        self.assertGreaterEqual(snap.decisions_total, 1)
+        self.assertGreaterEqual(snap.interventions_total, 1)
+
+    def test_telemetry_tracks_starvation_death_reason(self) -> None:
+        game = _FakeGame()
+        game.game_over = True
+        game.death_reason = "starvation"
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl.step(True)
+        snap = ctrl.telemetry_snapshot()
+        self.assertGreaterEqual(snap.deaths_starvation, 1)
+        self.assertEqual(str(snap.last_death_reason), "starvation")
+
+    def test_starvation_death_does_not_increment_stuck_episode_counter(self) -> None:
+        game = _FakeGame()
+        game.game_over = True
+        game.death_reason = "starvation"
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._episode_stuck = True
+        ctrl.step(True)
+        snap = ctrl.telemetry_snapshot()
+        self.assertEqual(int(snap.stuck_episodes_total), 0)
+
+    def test_space_strategy_toggle_setter_and_getter(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+            space_strategy_enabled=True,
+        )
+        self.assertTrue(ctrl.is_space_strategy_enabled())
+        ctrl.set_space_strategy_enabled(False)
+        self.assertFalse(ctrl.is_space_strategy_enabled())
+
+    def test_escape_controller_used_when_triggered(self) -> None:
+        game = _FakeGame()
+        # Dense fake body to ensure crowded/endgame trigger is plausible.
+        game.snake = [(x % 6, x // 6) for x in range(20)]
+        game.direction = (1, 0)
+        game.food = (5, 5)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(board_cells=6, agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+
+        with (
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.ESCAPE),
+            patch.object(ctrl._escape_controller, "choose_action", return_value=2) as choose_mock,
+            patch.object(ctrl, "_evaluate_action", return_value=(0.0, True, 0)),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 2)
+        choose_mock.assert_called_once()
+
+    def test_step_does_not_queue_agent_action_when_inference_unavailable(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = False
+        agent.predicted_action = 2
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(game.update_called)
+        self.assertEqual(game.queued, [])
+
+    def test_step_skips_agent_control_when_update_will_not_advance_move(self) -> None:
+        game = _FakeGame()
+        game.advance_next = False
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.step(True)
+        self.assertTrue(game.update_called)
+        self.assertEqual(agent.predict_calls, 0)
+        self.assertEqual(agent.predict_with_probs_calls, 0)
+
+    def test_step_avoids_probability_call_when_debug_overlays_disabled(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.set_debug_options(debug_overlay=False, reachable_overlay=False)
+        ctrl.step(True)
+        self.assertGreaterEqual(agent.predict_calls, 1)
+        self.assertEqual(agent.predict_with_probs_calls, 0)
+
+    def test_step_uses_probability_call_when_debug_overlay_enabled(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(),
+            obs_config=ObsConfig(use_extended_features=True),
+        )
+        ctrl.set_debug_options(debug_overlay=True, reachable_overlay=False)
+        ctrl.step(True)
+        self.assertEqual(agent.predict_calls, 0)
+        self.assertGreaterEqual(agent.predict_with_probs_calls, 1)
+
+    def test_cycle_break_prefers_unvisited_candidate_head(self) -> None:
+        game = _FakeGame()
+        game.snake = [(10, 10), (9, 10), (8, 10)]
+        game.direction = (1, 0)
+        game.food = (14, 10)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._recent_heads.extend([(11, 10)] * 8)
+
+        def _eval(*, action: int, **_kwargs):
+            if int(action) == 0:
+                return (1000.0, True, 0)
+            if int(action) == 1:
+                return (900.0, True, 0)
+            return (800.0, True, 0)
+
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=True),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", side_effect=_eval),
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=0) as space_fill_mock,
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 1)
+        space_fill_mock.assert_not_called()
+
+    def test_reset_episode_tracking_resets_dynamic_mode(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._dynamic.current_mode = ControlMode.SPACE_FILL
+        ctrl._dynamic.last_switch_reason = "cycle_repeat"
+        ctrl._recent_heads.extend([(1, 1), (1, 2), (1, 3)])
+        ctrl.reset_episode_tracking()
+        snap = ctrl.telemetry_snapshot()
+        self.assertEqual(snap.current_mode, ControlMode.PPO.value)
+        self.assertEqual(snap.last_switch_reason, "init")
+
+    def test_reset_episode_tracking_clears_stuck_flag(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._episode_stuck = True
+        ctrl.reset_episode_tracking()
+        self.assertFalse(bool(ctrl._episode_stuck))
+
+    def test_cycle_repeat_increments_telemetry_counter(self) -> None:
+        game = _FakeGame()
+        game.snake = [(10, 10), (9, 10), (8, 10)]
+        game.direction = (1, 0)
+        game.food = (14, 10)
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        agent.predicted_action = 0
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=True),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(0.0, True, 0)),
+        ):
+            ctrl.step(True)
+        snap = ctrl.telemetry_snapshot()
+        self.assertGreaterEqual(snap.cycle_repeats_total, 1)
+
+    def test_evaluate_action_uses_configured_lookahead_depth(self) -> None:
+        game = _FakeGame()
+        ctrl = GameplayController(
+            game=game,
+            agent=_FakeAgent(),
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        with patch.object(ctrl, "_lookahead_viability", return_value=1.0) as lookahead_mock:
+            _ = ctrl._evaluate_action(
+                board_cells=20,
+                snake=list(game.snake),
+                direction=tuple(game.direction),
+                food=tuple(game.food),
+                action=0,
+                food_weight=0.02,
+                capacity_penalty_scale=1.0,
+            )
+        self.assertTrue(lookahead_mock.called)
+        self.assertEqual(int(lookahead_mock.call_args.kwargs.get("depth", 0)), 3)
+
+    def test_lookahead_bonus_increases_action_score(self) -> None:
+        game = _FakeGame()
+        ctrl = GameplayController(
+            game=game,
+            agent=_FakeAgent(),
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        with (
+            patch.object(ctrl, "_reachable_space", return_value=40),
+            patch.object(ctrl, "_tail_is_reachable", return_value=True),
+            patch.object(ctrl, "_lookahead_viability", side_effect=[0.0, 1.0]),
+        ):
+            score_straight, _tail_ok_0, _shortfall_0 = ctrl._evaluate_action(
+                board_cells=20,
+                snake=list(game.snake),
+                direction=tuple(game.direction),
+                food=tuple(game.food),
+                action=0,
+                food_weight=0.02,
+                capacity_penalty_scale=1.0,
+            )
+            score_left, _tail_ok_1, _shortfall_1 = ctrl._evaluate_action(
+                board_cells=20,
+                snake=list(game.snake),
+                direction=tuple(game.direction),
+                food=tuple(game.food),
+                action=1,
+                food_weight=0.02,
+                capacity_penalty_scale=1.0,
+            )
+        self.assertGreater(float(score_left), float(score_straight))
+
+    def test_loop_escape_burst_activates_under_cycle_and_starvation_pressure(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 500
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 120
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=True),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_choose_loop_escape_action", return_value=2) as loop_mock,
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=0),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 2)
+        self.assertTrue(loop_mock.called)
+        snap = ctrl.telemetry_snapshot()
+        self.assertGreaterEqual(snap.loop_escape_activations_total, 1)
+
+    def test_loop_escape_can_override_safe_ppo_when_pressure_is_high(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 520
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=True),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_choose_loop_escape_action", return_value=2) as loop_mock,
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 2)
+        self.assertTrue(loop_mock.called)
+
+    def test_food_pressure_bypasses_space_fill_controller(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 720
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 160
+        ctrl._dynamic.last_food_step = 0
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_best_safe_action", return_value=2) as safe_mock,
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=1) as space_fill_mock,
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 2)
+        self.assertTrue(safe_mock.called)
+        space_fill_mock.assert_not_called()
+
+    def test_best_safe_action_prioritizes_food_progress_under_pressure(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 720
+        ctrl = GameplayController(
+            game=game,
+            agent=_FakeAgent(),
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._recent_heads.extend([(11, 10)] * 4)
+        with patch.object(ctrl, "_evaluate_action", return_value=(100.0, True, 0)):
+            action = ctrl._best_safe_action(
+                proposed_action=1,
+                board_cells=20,
+                snake=list(game.snake),
+                direction=tuple(game.direction),
+                food=tuple(game.food),
+                food_weight=0.02,
+                capacity_penalty_scale=1.0,
+            )
+        self.assertEqual(action, 0)
+
+    def test_loop_escape_burst_skips_when_signals_are_weak(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 10
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 60
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=True),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_food_distance_stalled", return_value=False),
+            patch.object(ctrl, "_choose_loop_escape_action", return_value=2) as loop_mock,
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=1),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertNotEqual(action, 2)
+        self.assertFalse(loop_mock.called)
+
+
+if __name__ == "__main__":
+    unittest.main()

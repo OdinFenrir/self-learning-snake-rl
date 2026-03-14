@@ -1,0 +1,2 @@
+"""Pygame Snake Frame package."""
+

@@ -1,0 +1,59 @@
+name: Release Windows Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-lock.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Build EXE
+        shell: pwsh
+        run: .\scripts\build_windows.ps1 -Python python
+
+      - name: Optional Code Sign EXE
+        if: ${{ secrets.WINDOWS_SIGN_CERT_BASE64 != '' && secrets.WINDOWS_SIGN_CERT_PASSWORD != '' }}
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.WINDOWS_SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CERT_PASSWORD }}
+          SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL }}
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $exePath = "dist\SnakeFrame\SnakeFrame.exe"
+          if (-not (Test-Path $exePath)) { throw "Missing EXE at $exePath" }
+          $timestamp = if ($env:SIGN_TIMESTAMP_URL) { $env:SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+          signtool sign /f $certPath /p $env:SIGN_CERT_PASSWORD /tr $timestamp /td sha256 /fd sha256 $exePath
+          signtool verify /pa $exePath
+
+      - name: Signing Not Configured
+        if: ${{ !(secrets.WINDOWS_SIGN_CERT_BASE64 != '' && secrets.WINDOWS_SIGN_CERT_PASSWORD != '') }}
+        shell: pwsh
+        run: Write-Host "Code signing skipped (no certificate secrets configured)."
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snakeframe-windows-exe
+          path: dist/SnakeFrame/**
