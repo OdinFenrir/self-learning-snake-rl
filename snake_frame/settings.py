@@ -76,9 +76,18 @@ class DynamicControlConfig:
     loop_escape_cooldown_steps: int = 36
     loop_escape_starvation_trigger_ratio: float = 0.55
     loop_escape_stall_window: int = 32
-    ppo_confidence_trust_threshold: float = 0.9
+    ppo_confidence_trust_threshold: float = 0.82
     ppo_confidence_trust_food_pressure_max: float = 0.72
     ppo_confidence_trust_min_free_ratio: float = 0.24
+    dynamic_warmup_steps: int = 120
+    enable_learned_arbiter: bool = True
+    arbiter_threshold: float = 0.56
+    arbiter_learning_rate: float = 0.04
+    arbiter_l2: float = 1.0e-4
+    enable_tactic_memory: bool = True
+    tactic_memory_max_clusters: int = 96
+    tactic_memory_merge_radius: float = 0.18
+    tactic_memory_weight: float = 120.0
     lookahead_depth: int = 3
     lookahead_weight: float = 220.0
 

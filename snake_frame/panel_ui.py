@@ -145,6 +145,7 @@ class SidePanelsRenderer:
         settings_lines: list[str],
     ) -> None:
         mouse_pos = pygame.mouse.get_pos()
+        panel_bottom = int(self.settings.window_height_px or self.settings.window_px) - int(self.tokens.spacing.section_gap)
         self._draw_section_header(surface, "Train Controls", 18, top)
         controls.generations_input.draw(surface, self.small_font)
 
@@ -160,11 +161,15 @@ class SidePanelsRenderer:
 
         y = controls.btn_options.rect.bottom + int(self.tokens.spacing.section_gap)
         line_h = self._line_height()
+        if y + line_h >= panel_bottom:
+            return
         self._draw_divider(surface, y - 5)
         self._draw_section_header(surface, "Run Status", 18, y)
         y += line_h
         max_text_w = max(80, int(self.settings.left_panel_px - 36))
         for line in run_status_lines:
+            if y + line_h > panel_bottom:
+                return
             self._draw_key_value_line(
                 surface,
                 x=18,
@@ -177,10 +182,14 @@ class SidePanelsRenderer:
             y += line_h
         if settings_lines:
             y += int(self.tokens.spacing.section_gap // 2)
+            if y + line_h >= panel_bottom:
+                return
             self._draw_divider(surface, y - 5)
             self._draw_section_header(surface, "Settings", 18, y)
             y += line_h
             for line in settings_lines:
+                if y + line_h > panel_bottom:
+                    return
                 self._draw_key_value_line(
                     surface,
                     x=18,

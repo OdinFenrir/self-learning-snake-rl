@@ -297,7 +297,7 @@ class TestGameplayController(unittest.TestCase):
         self.assertEqual(agent.predict_calls, 0)
         self.assertEqual(agent.predict_with_probs_calls, 0)
 
-    def test_step_avoids_probability_call_when_debug_overlays_disabled(self) -> None:
+    def test_step_uses_probability_call_for_confidence_even_when_debug_overlays_disabled(self) -> None:
         game = _FakeGame()
         agent = _FakeAgent()
         agent.is_ready = True
@@ -310,8 +310,8 @@ class TestGameplayController(unittest.TestCase):
         )
         ctrl.set_debug_options(debug_overlay=False, reachable_overlay=False)
         ctrl.step(True)
-        self.assertGreaterEqual(agent.predict_calls, 1)
-        self.assertEqual(agent.predict_with_probs_calls, 0)
+        self.assertEqual(agent.predict_calls, 0)
+        self.assertGreaterEqual(agent.predict_with_probs_calls, 1)
 
     def test_step_uses_probability_call_when_debug_overlay_enabled(self) -> None:
         game = _FakeGame()
@@ -584,6 +584,48 @@ class TestGameplayController(unittest.TestCase):
             action = ctrl._choose_safe_action(0)
         self.assertNotEqual(action, 2)
         self.assertFalse(loop_mock.called)
+
+    def test_choose_safe_action_resets_risk_flags_when_eval_is_unavailable(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._last_chosen_tail_reachable = False
+        ctrl._last_capacity_shortfall = 2
+        with (
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=None),
+        ):
+            _ = ctrl._choose_safe_action(0)
+        self.assertTrue(bool(ctrl._last_chosen_tail_reachable))
+        self.assertEqual(int(ctrl._last_capacity_shortfall), 0)
+
+    def test_choose_safe_action_uses_warmup_ppo_when_viable(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 40
+        with (
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(1000.0, True, 0)),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(int(action), 0)
+        self.assertEqual(str(ctrl.last_mode_switch_reason()), "warmup_ppo")
 
 
 if __name__ == "__main__":

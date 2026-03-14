@@ -4,9 +4,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+from pathlib import Path
 
 import pygame
 
+from .arbiter_model import LearnedArbiterModel
 from .board_analysis import (
     reachable_cell_count,
     reachable_cells as board_reachable_cells,
@@ -18,6 +20,7 @@ from .observation import action_to_direction, build_observation, is_danger, next
 from .protocols import AgentLike, GameLike
 from .settings import DynamicControlConfig, ObsConfig, Settings
 from .space_fill_controller import SpaceFillController
+from .tactic_memory import TacticMemoryBank
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,14 @@ class GameplayTelemetrySnapshot:
     last_death_reason: str
 
 
+@dataclass(frozen=True)
+class _DecisionContext:
+    features: tuple[float, ...]
+    proposed_action: int
+    chosen_action: int
+    override_used: bool
+
+
 class GameplayController:
     _TAIL_REACHABLE_BONUS = 1200.0
     _TAIL_UNREACHABLE_PENALTY = 1600.0
@@ -113,6 +124,7 @@ class GameplayController:
         settings: Settings,
         obs_config: ObsConfig,
         space_strategy_enabled: bool = True,
+        artifact_dir: Path | None = None,
     ) -> None:
         self.game = game
         self.agent = agent
@@ -140,6 +152,30 @@ class GameplayController:
         self._escape_controller = EscapeController()
         self._space_fill_controller = SpaceFillController()
         self._dynamic_cfg: DynamicControlConfig = getattr(settings, "dynamic_control", DynamicControlConfig())
+        self._arbiter_feature_dim = 8
+        self._decision_contexts: deque[_DecisionContext] = deque(maxlen=192)
+        self._last_decision_context: _DecisionContext | None = None
+        self._persist_learning = artifact_dir is not None
+        self._artifact_dir = Path(artifact_dir) if artifact_dir is not None else (Path(__file__).resolve().parents[1] / "state" / "ppo" / "v2")
+        self._arbiter_path = self._artifact_dir / "arbiter_model.json"
+        self._tactic_memory_path = self._artifact_dir / "tactic_memory.json"
+        self._arbiter_dirty = False
+        self._tactic_dirty = False
+        self._arbiter_model = (
+            LearnedArbiterModel.load(self._arbiter_path, fallback_dim=self._arbiter_feature_dim)
+            if bool(self._persist_learning)
+            else LearnedArbiterModel(dim=self._arbiter_feature_dim)
+        )
+        self._arbiter_model.learning_rate = float(getattr(self._dynamic_cfg, "arbiter_learning_rate", self._arbiter_model.learning_rate))
+        self._arbiter_model.l2 = float(getattr(self._dynamic_cfg, "arbiter_l2", self._arbiter_model.l2))
+        self._tactic_memory = (
+            TacticMemoryBank.load(self._tactic_memory_path, fallback_dim=self._arbiter_feature_dim)
+            if bool(self._persist_learning)
+            else TacticMemoryBank(dim=self._arbiter_feature_dim)
+        )
+        self._tactic_memory.max_clusters = int(getattr(self._dynamic_cfg, "tactic_memory_max_clusters", self._tactic_memory.max_clusters))
+        self._tactic_memory.merge_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius", self._tactic_memory.merge_radius))
+        self._tactic_memory.memory_weight = float(getattr(self._dynamic_cfg, "tactic_memory_weight", self._tactic_memory.memory_weight))
         self._dynamic = DynamicControllerState()
         self._last_score_seen = int(getattr(self.game, "score", 0))
         self._last_action: int | None = None
@@ -188,6 +224,74 @@ class GameplayController:
                 logger.debug("will_advance_on_next_update failed; defaulting to per-frame control", exc_info=True)
         return True
 
+    def _decision_features(
+        self,
+        *,
+        free_ratio: float,
+        food_pressure: float,
+        no_progress_steps: int,
+        cycle_repeat: bool,
+        imminent_danger: bool,
+        proposed_viable: bool,
+        proposed_eval: tuple[float, bool, int] | None,
+        chosen_eval: tuple[float, bool, int] | None,
+    ) -> list[float]:
+        soft = max(1, int(getattr(self._dynamic_cfg, "no_progress_steps_escape", 64)))
+        hard = max(soft + 1, int(getattr(self._dynamic_cfg, "no_progress_steps_space_fill", 128)))
+        no_progress_norm = float(max(0.0, min(1.0, float(no_progress_steps - soft) / float(max(1, hard - soft)))))
+        pred_conf = float(self._last_predicted_confidence if self._last_predicted_confidence is not None else 0.0)
+        shortfall = 0.0 if proposed_eval is None else float(max(0, int(proposed_eval[2])))
+        delta = 0.0
+        if proposed_eval is not None and chosen_eval is not None:
+            delta = float(chosen_eval[0]) - float(proposed_eval[0])
+        return [
+            float(max(0.0, min(1.0, free_ratio))),
+            float(max(0.0, min(1.0, food_pressure))),
+            float(max(0.0, min(1.0, no_progress_norm))),
+            float(max(0.0, min(1.0, pred_conf))),
+            1.0 if bool(cycle_repeat) else 0.0,
+            1.0 if bool(imminent_danger) else 0.0,
+            1.0 if bool(proposed_viable) else 0.0,
+            float(max(-2.0, min(2.0, (delta / 250.0) - (shortfall / 12.0)))),
+        ]
+
+    def _reinforce_recent_contexts(self, *, success: bool, weight: float) -> None:
+        if not self._decision_contexts:
+            return
+        horizon = min(8, len(self._decision_contexts))
+        samples = list(self._decision_contexts)[-horizon:]
+        for ctx in samples:
+            if bool(getattr(self._dynamic_cfg, "enable_learned_arbiter", False)) and bool(ctx.override_used):
+                self._arbiter_model.update(list(ctx.features), label=1 if bool(success) else 0, weight=float(weight))
+                self._arbiter_dirty = True
+            if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)):
+                self._tactic_memory.record(
+                    features=list(ctx.features),
+                    action=int(ctx.chosen_action),
+                    success=bool(success),
+                    weight=float(weight),
+                )
+                self._tactic_dirty = True
+
+    def _maybe_persist_learning_state(self) -> None:
+        # Avoid synchronous writes each frame; persist every 128 decisions and at episode end.
+        if int(self._decisions_total) <= 0 or (int(self._decisions_total) % 128) != 0:
+            return
+        self._persist_learning_state()
+
+    def _persist_learning_state(self) -> None:
+        if not bool(self._persist_learning):
+            return
+        try:
+            if self._arbiter_dirty:
+                self._arbiter_model.save(self._arbiter_path)
+                self._arbiter_dirty = False
+            if self._tactic_dirty:
+                self._tactic_memory.save(self._tactic_memory_path)
+                self._tactic_dirty = False
+        except Exception:
+            logger.debug("Failed persisting controller learning state", exc_info=True)
+
     def _apply_agent_control(self) -> None:
         inference_available = getattr(self.agent, "is_inference_available", getattr(self.agent, "is_ready", False))
         if callable(inference_available):
@@ -197,6 +301,7 @@ class GameplayController:
             return
         score_now = int(getattr(self.game, "score", 0))
         if score_now > self._last_score_seen:
+            self._reinforce_recent_contexts(success=True, weight=float(max(1, score_now - self._last_score_seen)))
             self._dynamic.last_food_step = int(self._decisions_total)
             self._last_score_seen = score_now
         if self.game.snake:
@@ -219,7 +324,7 @@ class GameplayController:
             list(self.game.snake),
             tuple(self.game.direction),
         )
-        if debug_needed and callable(predict_with_probs):
+        if callable(predict_with_probs):
             try:
                 predicted_action, action_probs = predict_with_probs(obs, action_masks=action_masks)
                 predicted_action = int(predicted_action)
@@ -244,6 +349,10 @@ class GameplayController:
             chosen_action=action,
             action_probs=action_probs,
         )
+        if self._last_decision_context is not None:
+            self._decision_contexts.append(self._last_decision_context)
+            self._last_decision_context = None
+        self._maybe_persist_learning_state()
         if debug_needed:
             self._update_debug_snapshot(
                 predicted_action=predicted_action,
@@ -404,7 +513,7 @@ class GameplayController:
         risk_override_trigger = bool(
             imminent_danger
             or cycle_repeat
-            or int(no_progress_steps) >= int(self._dynamic_cfg.no_progress_steps_escape)
+            or int(no_progress_steps) >= int(self._dynamic_cfg.no_progress_steps_space_fill)
             or float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER)
         )
         # Avoid broad over-intervention: if PPO action is not strictly "viable" but
@@ -428,6 +537,16 @@ class GameplayController:
             no_progress_steps=no_progress_steps,
         )
         self._decision_mode_now = mode
+        warmup_steps = max(0, int(getattr(self._dynamic_cfg, "dynamic_warmup_steps", 0)))
+        if (
+            mode == ControlMode.PPO
+            and proposed_viable
+            and int(self._decisions_total) < warmup_steps
+        ):
+            self._dynamic.last_switch_reason = "warmup_ppo"
+            self._last_chosen_tail_reachable = True
+            self._last_capacity_shortfall = int(proposed_eval[2]) if proposed_eval is not None else 0
+            return int(proposed_action)
 
         if (
             mode == ControlMode.PPO
@@ -516,10 +635,60 @@ class GameplayController:
             food_weight=food_weight,
             capacity_penalty_scale=capacity_penalty_scale,
         )
+        if (
+            int(action) != int(proposed_action)
+            and not imminent_danger
+            and proposed_eval is not None
+            and chosen_eval is not None
+            and bool(getattr(self._dynamic_cfg, "enable_learned_arbiter", False))
+            and mode == ControlMode.PPO
+            and proposed_viable
+            and int(self._loop_escape_steps_left) <= 0
+        ):
+            features = self._decision_features(
+                free_ratio=free_ratio,
+                food_pressure=food_pressure,
+                no_progress_steps=no_progress_steps,
+                cycle_repeat=cycle_repeat,
+                imminent_danger=imminent_danger,
+                proposed_viable=proposed_viable,
+                proposed_eval=proposed_eval,
+                chosen_eval=chosen_eval,
+            )
+            proba = float(self._arbiter_model.predict_proba(features))
+            threshold = float(getattr(self._dynamic_cfg, "arbiter_threshold", 0.56))
+            if proba < threshold:
+                action = int(proposed_action)
+                chosen_eval = proposed_eval
+                self._dynamic.last_switch_reason = "arbiter_veto"
+                self._arbiter_model.update(features, label=0, weight=1.0)
+            else:
+                delta_ok = float(chosen_eval[0]) > float(proposed_eval[0])
+                self._arbiter_model.update(features, label=1 if delta_ok else 0, weight=1.0)
+            self._arbiter_dirty = True
         if chosen_eval is not None:
             _score, tail_reachable, capacity_shortfall = chosen_eval
             self._last_chosen_tail_reachable = bool(tail_reachable)
             self._last_capacity_shortfall = int(capacity_shortfall)
+        else:
+            self._last_chosen_tail_reachable = True
+            self._last_capacity_shortfall = 0
+        decision_features = self._decision_features(
+            free_ratio=free_ratio,
+            food_pressure=food_pressure,
+            no_progress_steps=no_progress_steps,
+            cycle_repeat=cycle_repeat,
+            imminent_danger=imminent_danger,
+            proposed_viable=proposed_viable,
+            proposed_eval=proposed_eval,
+            chosen_eval=chosen_eval,
+        )
+        self._last_decision_context = _DecisionContext(
+            features=tuple(float(v) for v in decision_features),
+            proposed_action=int(proposed_action),
+            chosen_action=int(action),
+            override_used=bool(int(action) != int(proposed_action)),
+        )
         return int(action)
 
     def _choose_loop_escape_action(
@@ -566,7 +735,22 @@ class GameplayController:
                 float(1 if tail_ok else 0),
                 float(-int(shortfall)),
                 float(turn_change),
-                float(score),
+                float(score)
+                + float(
+                    self._tactic_memory.action_bias(
+                        features=self._decision_features(
+                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+                            food_pressure=self._food_pressure(),
+                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            cycle_repeat=False,
+                            imminent_danger=False,
+                            proposed_viable=True,
+                            proposed_eval=eval_result,
+                            chosen_eval=eval_result,
+                        ),
+                        action=int(action),
+                    )
+                ) if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)) else float(score),
             )
             if best_key is None or key > best_key:
                 best_key = key
@@ -616,7 +800,22 @@ class GameplayController:
                 float(1 if tail_ok else 0),
                 float(-int(shortfall)),
                 float(food_progress),
-                float(score),
+                float(score)
+                + float(
+                    self._tactic_memory.action_bias(
+                        features=self._decision_features(
+                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+                            food_pressure=self._food_pressure(),
+                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            cycle_repeat=True,
+                            imminent_danger=False,
+                            proposed_viable=True,
+                            proposed_eval=eval_result,
+                            chosen_eval=eval_result,
+                        ),
+                        action=int(action),
+                    )
+                ) if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)) else float(score),
                 float(turn_change),
             )
             if best_key is None or key > best_key:
@@ -718,6 +917,21 @@ class GameplayController:
                 float(food_progress if food_pressure >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
                 float(score) + (float(food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
                 float(-revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
+                float(
+                    self._tactic_memory.action_bias(
+                        features=self._decision_features(
+                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+                            food_pressure=food_pressure,
+                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            cycle_repeat=False,
+                            imminent_danger=False,
+                            proposed_viable=bool(viable),
+                            proposed_eval=eval_result,
+                            chosen_eval=eval_result,
+                        ),
+                        action=int(action),
+                    )
+                ) if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)) else 0.0,
                 float(-next_food_dist),
                 float(1 if int(action) == int(proposed_action) else 0),
             )
@@ -1211,6 +1425,8 @@ class GameplayController:
     def _record_episode_end(self) -> None:
         reason = str(self.game.death_reason or "other")
         self._last_death_reason = reason
+        success = bool(reason in ("fill",)) or bool(int(getattr(self.game, "score", 0)) >= 100)
+        self._reinforce_recent_contexts(success=success, weight=2.0 if success else 1.0)
         if reason == "wall":
             self._deaths_wall += 1
         elif reason == "body":
@@ -1235,6 +1451,7 @@ class GameplayController:
         self._episode_stuck = False
         if self._last_chosen_confidence is not None:
             self._death_confidences.append(float(self._last_chosen_confidence))
+        self._persist_learning_state()
 
     def _reset_dynamic_state(self) -> None:
         self._dynamic = DynamicControllerState()
@@ -1242,6 +1459,8 @@ class GameplayController:
         self._last_predicted_confidence = None
         self._recent_heads.clear()
         self._recent_food_distances.clear()
+        self._decision_contexts.clear()
+        self._last_decision_context = None
         self._loop_escape_steps_left = 0
         self._loop_escape_cooldown_until = 0
         self._decision_mode_now = ControlMode.PPO

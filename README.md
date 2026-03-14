@@ -64,6 +64,27 @@ Current runtime defaults:
 - PPO runs in-process with `DummyVecEnv` for app and fast profiles.
 - If PPO inference is available, agent control is active.
 
+## Controller Intelligence Layer
+
+The controller now combines:
+- PPO policy action
+- dynamic safety controller (escape / space-fill / loop-escape)
+- learned arbiter (online logistic model) to accept/veto low-value overrides
+- tactic memory bank (clustered local contexts) to bias action scoring from prior successful tactics
+
+Persistence files (local runtime state):
+- `state/ppo/v2/arbiter_model.json`
+- `state/ppo/v2/tactic_memory.json`
+
+Core modules:
+- `snake_frame/gameplay_controller.py`
+- `snake_frame/arbiter_model.py`
+- `snake_frame/tactic_memory.py`
+
+Notes:
+- learning state persistence is enabled for app/runtime and holdout evaluation paths
+- smoke/tests keep behavior deterministic and gated via existing validation commands
+
 ## Persistence Model
 
 `Save` stores UI + PPO artifacts under:
@@ -85,6 +106,9 @@ This is designed to support later tuning analysis and reproducibility.
 - `snake_frame/game.py`: snake mechanics + rendering
 - `snake_frame/ppo_env.py`: Gymnasium environment
 - `snake_frame/ppo_agent.py`: PPO train/load/eval/persistence
+- `snake_frame/gameplay_controller.py`: safety/controller arbitration + learned controller memory
+- `snake_frame/arbiter_model.py`: online learned override arbiter
+- `snake_frame/tactic_memory.py`: clustered tactic memory and action biasing
 - `snake_frame/training.py`: threaded training lifecycle
 - `snake_frame/state_io.py`: UI persistence and recovery
 - `scripts/`: diagnostics/bench/tuning utilities
@@ -102,6 +126,11 @@ This is designed to support later tuning analysis and reproducibility.
   - `.venv\Scripts\python.exe scripts\validate_determinism.py --baseline tests\baselines\deterministic_windows.json`
 - Headless smoke + perf budgets:
   - `.venv\Scripts\python.exe -m snake_frame.smoke_runner --train-steps 2048 --game-steps 300 --ppo-profile fast --enforce-budgets --max-frame-p95-ms 40 --max-frame-avg-ms 34 --max-frame-jitter-ms 8 --max-inference-p95-ms 12 --min-training-steps-per-sec 250`
+
+- Controller gap evaluation artifacts (latest examples):
+  - `artifacts/live_eval/suites/latest_suite.json`
+  - `artifacts/live_eval/controller_gap_after_tuning_pass1_confirmed.json`
+  - `artifacts/live_eval/controller_gap_after_memory_arbiter_impl.json`
 
 Budget semantics:
 - `--max-frame-avg-ms` and `--max-frame-jitter-ms` are optional and only enforced when explicitly provided.

@@ -234,10 +234,17 @@ class HoldoutEvalController:
             return
         loader = getattr(self.agent, "load_if_exists_detailed", None)
         if callable(loader):
-            try:
-                _ = loader(selector=selector)
-            except Exception:
-                pass
+            result = loader(selector=selector)
+            ok = bool(getattr(result, "ok", False))
+            if not ok:
+                code = str(getattr(result, "code", "unknown"))
+                detail = str(getattr(result, "detail", "")).strip()
+                suffix = f" ({detail})" if detail else ""
+                raise RuntimeError(f"eval model load failed [{code}]{suffix}")
+            return
+        basic_loader = getattr(self.agent, "load_if_exists", None)
+        if callable(basic_loader) and not bool(basic_loader()):
+            raise RuntimeError("eval model load failed [missing]")
 
     def _eval_with_controller(self, *, seeds: list[int], max_steps: int, model_selector: str) -> list[dict[str, int]]:
         _ = model_selector
@@ -272,6 +279,7 @@ class HoldoutEvalController:
                 settings=base,
                 obs_config=self.obs_config,
                 space_strategy_enabled=True,
+                artifact_dir=Path(getattr(self.agent, "artifact_dir", self.out_dir)),
             )
             for _ in range(int(max_steps)):
                 if bool(game.game_over):

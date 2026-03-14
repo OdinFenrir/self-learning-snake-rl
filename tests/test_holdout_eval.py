@@ -131,6 +131,34 @@ class TestHoldoutEval(unittest.TestCase):
             self.assertFalse(bool(snap.active))
             self.assertEqual(str(snap.last_error), "training_active")
 
+    def test_start_fails_when_model_load_fails(self) -> None:
+        class _FailAgent(_FakeAgent):
+            def load_if_exists_detailed(self, selector: str | None = None):
+                _ = selector
+                self.load_calls += 1
+                return type("R", (), {"ok": False, "code": "missing", "detail": "selector artifact not found"})()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctl = HoldoutEvalController(
+                agent=_FailAgent(),
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            self.assertTrue(
+                ctl.start(
+                    mode=HoldoutEvalController.MODE_PPO_ONLY,
+                    seeds=[17001],
+                    max_steps=300,
+                    model_selector="best",
+                )
+            )
+            msg = self._wait(ctl)
+            self.assertIsNotNone(msg)
+            self.assertIn("failed", str(msg).lower())
+            self.assertIn("eval model load failed", str(msg).lower())
+
 
 if __name__ == "__main__":
     unittest.main()
