@@ -15,6 +15,10 @@ Phase 2:
 
 ![Snake Frame live training UI phase 2](docs/assets/live_training_ui_phase2.png)
 
+Phase 3:
+
+![Snake Frame live training UI phase 3](docs/assets/live_training_ui_phase3.png)
+
 ## Project Resume
 
 This project is a full training + evaluation environment for reinforcement learning experiments on Snake:
