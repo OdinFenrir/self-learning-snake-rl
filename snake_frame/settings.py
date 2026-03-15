@@ -100,6 +100,13 @@ class DynamicControlConfig:
     pocket_exit_guard_min_no_progress_steps: int = 32
     pocket_exit_guard_min_food_pressure: float = 0.25
     pocket_exit_guard_min_shortfall_gain: int = 2
+    enable_pre_no_exit_guard: bool = False
+    pre_no_exit_guard_max_safe_options: int = 2
+    pre_no_exit_guard_min_no_progress_steps: int = 24
+    pre_no_exit_guard_no_exit_safe_options: int = 1
+    pre_no_exit_guard_min_shortfall_gain: int = 1
+    pre_no_exit_guard_require_collapsing_safe_options: bool = True
+    pre_no_exit_guard_require_no_exit_signal: bool = True
     ppo_open_field_trust_food_pressure_max: float = 0.35
     narrow_corridor_trigger_steps: int = 6
     dynamic_warmup_steps: int = 120

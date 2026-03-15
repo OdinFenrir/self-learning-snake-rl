@@ -223,11 +223,18 @@ class TestGameplayController(unittest.TestCase):
             "risk_guard_candidate",
             "risk_guard_eligible",
             "risk_guard_blockers",
+            "pre_no_exit_guard_candidate",
+            "pre_no_exit_guard_applied",
+            "pre_no_exit_guard_blocker",
+            "no_exit_state",
+            "entered_no_exit_this_step",
+            "action_eval_tuples",
             "interventions_total",
             "pocket_risk_total",
         }
         self.assertTrue(required.issubset(set(row.keys())))
         self.assertIsInstance(row.get("risk_guard_blockers"), list)
+        self.assertIsInstance(row.get("action_eval_tuples"), dict)
 
     def test_telemetry_tracks_starvation_death_reason(self) -> None:
         game = _FakeGame()
@@ -754,6 +761,85 @@ class TestGameplayController(unittest.TestCase):
             action = ctrl._choose_safe_action(0)
         self.assertEqual(int(action), 0)
         self.assertEqual(str(ctrl.last_mode_switch_reason()), "ppo_tolerate_low_risk")
+
+    def test_pre_no_exit_guard_overrides_low_risk_tolerate_path_when_structurally_safer_alt_exists(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(
+                    enable_learned_arbiter=False,
+                    enable_pre_no_exit_guard=True,
+                    pre_no_exit_guard_max_safe_options=2,
+                    pre_no_exit_guard_min_no_progress_steps=0,
+                    pre_no_exit_guard_no_exit_safe_options=2,
+                    pre_no_exit_guard_require_collapsing_safe_options=False,
+                    pre_no_exit_guard_require_no_exit_signal=False,
+                    pre_no_exit_guard_min_shortfall_gain=2,
+                ),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, False, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_best_safe_action", return_value=1),
+            patch.object(ctrl, "_evaluate_action", side_effect=[(100.0, True, 5), (130.0, True, 0)]),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(int(action), 1)
+        self.assertEqual(str(ctrl.last_mode_switch_reason()), "pre_no_exit_guard")
+        row = ctrl.decision_trace_snapshot()
+        self.assertTrue(bool(row.get("pre_no_exit_guard_candidate")))
+        self.assertTrue(bool(row.get("pre_no_exit_guard_applied")))
+        self.assertEqual(str(row.get("pre_no_exit_guard_blocker")), "applied")
+
+    def test_pre_no_exit_guard_reports_blocker_when_safe_options_not_low(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(
+                    enable_learned_arbiter=False,
+                    enable_pre_no_exit_guard=True,
+                    pre_no_exit_guard_max_safe_options=2,
+                    pre_no_exit_guard_min_no_progress_steps=0,
+                    pre_no_exit_guard_require_collapsing_safe_options=False,
+                    pre_no_exit_guard_require_no_exit_signal=False,
+                ),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        game.snake = [(x % 20, x // 20) for x in range(100)]
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, False, False]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_best_safe_action", return_value=1),
+            patch.object(ctrl, "_evaluate_action", side_effect=[(100.0, True, 5), (130.0, True, 1)]),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(int(action), 0)
+        self.assertEqual(str(ctrl.last_mode_switch_reason()), "ppo_tolerate_low_risk")
+        row = ctrl.decision_trace_snapshot()
+        self.assertTrue(bool(row.get("pre_no_exit_guard_candidate")))
+        self.assertFalse(bool(row.get("pre_no_exit_guard_applied")))
+        self.assertEqual(str(row.get("pre_no_exit_guard_blocker")), "safe_options_not_low")
 
     def test_pocket_exit_guard_disabled_keeps_tolerate_low_risk(self) -> None:
         game = _FakeGame()

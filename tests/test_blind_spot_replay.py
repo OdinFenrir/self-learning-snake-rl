@@ -44,6 +44,26 @@ class TestBlindSpotReplay(unittest.TestCase):
             self.assertTrue(all(not bool(s["override_used"]) for s in spots))
             self.assertTrue(all(len(list(s["window_rows"])) <= 2 for s in spots))
 
+    def test_build_report_require_death_filters_non_terminal_traces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "seed_17001.jsonl"
+            rows = [
+                {"step": 0, "predicted_confidence": 0.95, "override_used": False, "game_over": False},
+                {"step": 1, "predicted_confidence": 0.96, "override_used": False, "game_over": False},
+            ]
+            p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+            report = build_blind_spot_report(
+                trace_files=[p],
+                min_confidence=0.9,
+                max_steps_to_death=2,
+                replay_window=2,
+                max_spots=10,
+                only_no_override=True,
+                require_death=True,
+            )
+            summary = dict(report["summary"])
+            self.assertEqual(int(summary["blind_spot_count"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,9 @@ class TestDynamicController(unittest.TestCase):
             imminent_danger=False,
             cycle_repeat=False,
             no_progress_steps=1,
+            safe_option_count=2,
+            proposed_tail_reachable=True,
+            proposed_capacity_shortfall=0,
         )
         self.assertEqual(mode, ControlMode.ESCAPE)
 
@@ -67,6 +70,9 @@ class TestDynamicController(unittest.TestCase):
             imminent_danger=False,
             cycle_repeat=True,
             no_progress_steps=50,
+            safe_option_count=2,
+            proposed_tail_reachable=True,
+            proposed_capacity_shortfall=0,
         )
         self.assertEqual(mode, ControlMode.SPACE_FILL)
 
@@ -84,6 +90,9 @@ class TestDynamicController(unittest.TestCase):
             imminent_danger=False,
             cycle_repeat=False,
             no_progress_steps=1,
+            safe_option_count=2,
+            proposed_tail_reachable=True,
+            proposed_capacity_shortfall=0,
         )
         self.assertEqual(mode, ControlMode.PPO)
 

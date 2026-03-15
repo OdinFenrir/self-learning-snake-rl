@@ -130,6 +130,13 @@ class TestHoldoutEval(unittest.TestCase):
             self.assertIn("switch_reason", sample)
             self.assertIn("score_before", sample)
             self.assertIn("score_after", sample)
+            self.assertIn("head_snake_consistent_before", sample)
+            self.assertTrue(bool(sample.get("head_snake_consistent_before")))
+            self.assertIn("action_eval_tuples", sample)
+            self.assertIsInstance(sample.get("action_eval_tuples"), dict)
+            self.assertIn("no_exit_state", sample)
+            self.assertIn("entered_no_exit_this_step", sample)
+            self.assertIn("steps_to_no_exit", sample)
 
     def test_controller_eval_disables_controller_learning(self) -> None:
         class _FakeGameplayController:
@@ -245,6 +252,92 @@ class TestHoldoutEval(unittest.TestCase):
             self.assertIsNotNone(msg)
             self.assertIn("failed", str(msg).lower())
             self.assertIn("eval model load failed", str(msg).lower())
+
+    def test_trace_invariant_failure_is_hard_error(self) -> None:
+        class _InconsistentSnake:
+            def __len__(self) -> int:
+                return 2
+
+            def __iter__(self):
+                return iter([(3, 12), (2, 12)])
+
+            def __getitem__(self, idx):
+                if int(idx) == 0:
+                    return (3, 11)
+                return (2, 12)
+
+        class _FakeSnakeGame:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.rng = type("R", (), {"seed": lambda self, _s: None})()
+                self.game_over = False
+                self.snake = _InconsistentSnake()
+                self.direction = (1, 0)
+                self.food = (10, 10)
+                self.score = 0
+                self.death_reason = "none"
+                self.steps_without_food = 0
+
+            def reset(self) -> None:
+                return None
+
+            def update(self) -> None:
+                self.game_over = True
+
+            def starvation_limit(self) -> int:
+                return 800
+
+        class _FakeGameplayController:
+            def __init__(self, *args, **kwargs) -> None:
+                _ = (args, kwargs)
+
+            def set_learning_enabled(self, enabled: bool) -> None:
+                _ = enabled
+
+            def set_debug_options(self, *, debug_overlay: bool, reachable_overlay: bool) -> None:
+                _ = (debug_overlay, reachable_overlay)
+
+            def _apply_agent_control(self) -> None:
+                return None
+
+            def decision_trace_snapshot(self):
+                return {
+                    "decision_index": 1,
+                    "mode": "ppo",
+                    "switch_reason": "none",
+                    "action_eval_tuples": {},
+                }
+
+            def telemetry_snapshot(self):
+                return type("S", (), {"decisions_total": 1, "interventions_total": 0})()
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "snake_frame.holdout_eval.SnakeGame",
+            _FakeSnakeGame,
+        ), patch(
+            "snake_frame.holdout_eval.GameplayController",
+            _FakeGameplayController,
+        ):
+            ctl = HoldoutEvalController(
+                agent=_FakeAgent(),
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            self.assertTrue(
+                ctl.start(
+                    mode=HoldoutEvalController.MODE_CONTROLLER_ON,
+                    seeds=[17001],
+                    max_steps=2,
+                    model_selector="best",
+                    trace_enabled=True,
+                    trace_tag="invfail",
+                )
+            )
+            msg = self._wait(ctl, timeout_s=6.0)
+            self.assertIsNotNone(msg)
+            self.assertIn("failed", str(msg).lower())
+            self.assertIn("trace invariant failed", str(msg).lower())
 
 
 if __name__ == "__main__":

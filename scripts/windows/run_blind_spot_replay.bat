@@ -24,7 +24,7 @@ if not exist "%SCRIPT_HTML%" (
 )
 
 echo Building blind-spot replay JSON...
-"%PYTHON%" "%SCRIPT_JSON%" --trace-root "%TRACE_ROOT%" --latest-only --min-confidence 0.7 --max-steps-to-death 10 --replay-window 30 --max-spots 50 --out "%OUT_JSON%"
+"%PYTHON%" "%SCRIPT_JSON%" --trace-root "%TRACE_ROOT%" --latest-only --min-confidence 0.7 --max-steps-to-death 10 --replay-window 30 --max-spots 50 --require-death --out "%OUT_JSON%"
 if errorlevel 1 exit /b 1
 
 echo Building blind-spot replay HTML...

@@ -280,6 +280,36 @@ class HoldoutEvalController:
             f.write(json.dumps(row, allow_nan=False))
             f.write("\n")
 
+    @staticmethod
+    def _annotate_no_exit_timing(rows: list[dict[str, object]]) -> None:
+        next_no_exit_idx: int | None = None
+        for i in range(len(rows) - 1, -1, -1):
+            row = rows[i]
+            no_exit = bool(row.get("no_exit_state", False))
+            if bool(no_exit):
+                next_no_exit_idx = int(i)
+            row["steps_to_no_exit"] = None if next_no_exit_idx is None else int(max(0, int(next_no_exit_idx - i)))
+        prev_no_exit = False
+        for row in rows:
+            cur_no_exit = bool(row.get("no_exit_state", False))
+            row["entered_no_exit_this_step"] = bool(cur_no_exit and not bool(prev_no_exit))
+            prev_no_exit = bool(cur_no_exit)
+
+    @staticmethod
+    def _head_snake_consistent_before(
+        *,
+        head_before: tuple[int, int] | None,
+        snake_before: list[list[int]],
+    ) -> bool:
+        if head_before is None:
+            return len(snake_before) == 0
+        if not snake_before:
+            return False
+        head0 = snake_before[0]
+        if not isinstance(head0, list) or len(head0) < 2:
+            return False
+        return int(head_before[0]) == int(head0[0]) and int(head_before[1]) == int(head0[1])
+
     def _eval_with_controller(
         self,
         *,
@@ -335,6 +365,7 @@ class HoldoutEvalController:
             if bool(trace_enabled):
                 gameplay.set_debug_options(debug_overlay=True, reachable_overlay=False)
             seed_trace_path = (trace_root / f"seed_{int(seed)}.jsonl") if trace_root is not None else None
+            seed_trace_rows: list[dict[str, object]] = []
             for step_idx in range(int(max_steps)):
                 if bool(game.game_over):
                     break
@@ -346,6 +377,10 @@ class HoldoutEvalController:
                 trace_row = gameplay.decision_trace_snapshot() if bool(trace_enabled) else None
                 game.update()
                 if trace_row is not None and seed_trace_path is not None:
+                    consistent_before = self._head_snake_consistent_before(
+                        head_before=head_before,
+                        snake_before=snake_before,
+                    )
                     row = dict(trace_row)
                     row.update(
                         {
@@ -360,10 +395,19 @@ class HoldoutEvalController:
                             "snake_after": [[int(pos[0]), int(pos[1])] for pos in list(game.snake)],
                             "food_before": food_before,
                             "food_after": [int(game.food[0]), int(game.food[1])],
+                            "head_snake_consistent_before": bool(consistent_before),
                             "game_over": bool(game.game_over),
                             "death_reason": str(getattr(game, "death_reason", "none")),
                         }
                     )
+                    if not bool(consistent_before):
+                        raise RuntimeError(
+                            f"trace invariant failed: head_before != snake_before[0] seed={int(seed)} step={int(step_idx)}"
+                        )
+                    seed_trace_rows.append(row)
+            if seed_trace_path is not None and seed_trace_rows:
+                self._annotate_no_exit_timing(seed_trace_rows)
+                for row in seed_trace_rows:
                     self._append_jsonl(seed_trace_path, row)
             rows.append({"seed": int(seed), "score": int(game.score)})
             get_snap = getattr(gameplay, "telemetry_snapshot", None)

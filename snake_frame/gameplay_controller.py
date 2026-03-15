@@ -163,6 +163,15 @@ class GameplayController:
         self._last_risk_guard_candidate = False
         self._last_risk_guard_eligible = False
         self._last_risk_guard_blockers: tuple[str, ...] = ()
+        self._last_pre_no_exit_guard_candidate = False
+        self._last_pre_no_exit_guard_applied = False
+        self._last_pre_no_exit_guard_blocker = "disabled"
+        self._last_pre_no_exit_guard_alt_action: int | None = None
+        self._last_pre_no_exit_guard_safe_collapsing = False
+        self._last_pre_no_exit_guard_near_no_exit_signal = False
+        self._last_no_exit_state = False
+        self._last_entered_no_exit_this_step = False
+        self._last_action_eval_tuples: dict[str, dict[str, object]] = {}
         self._space_strategy_enabled = bool(space_strategy_enabled)
         self._escape_controller = EscapeController()
         self._space_fill_controller = SpaceFillController()
@@ -472,6 +481,7 @@ class GameplayController:
             cand_head = next_head(head, cand_dir)
             if not is_danger(board_cells, snake, cand_head):
                 safe_option_count += 1
+        prev_safe_option_count = int(self._last_safe_option_count)
         self._last_safe_option_count = int(safe_option_count)
         if int(safe_option_count) <= 1:
             self._narrow_corridor_streak += 1
@@ -499,6 +509,14 @@ class GameplayController:
         self._last_risk_guard_candidate = False
         self._last_risk_guard_eligible = False
         self._last_risk_guard_blockers = ()
+        self._last_pre_no_exit_guard_candidate = False
+        self._last_pre_no_exit_guard_applied = False
+        self._last_pre_no_exit_guard_blocker = "disabled"
+        self._last_pre_no_exit_guard_alt_action = None
+        self._last_pre_no_exit_guard_safe_collapsing = False
+        self._last_pre_no_exit_guard_near_no_exit_signal = False
+        self._last_entered_no_exit_this_step = False
+        self._last_action_eval_tuples = {}
 
         if not bool(self._dynamic_cfg.enable_dynamic_control):
             action = self._legacy_safe_action(
@@ -543,6 +561,30 @@ class GameplayController:
             and float(food_pressure) <= 0.70
         )
         effective_proposed_viable = bool(proposed_viable) or bool(relaxed_open_viable)
+        if bool(self._debug_overlay_enabled or self._reachable_overlay_enabled):
+            self._last_action_eval_tuples = self._build_runtime_action_eval_tuples(
+                proposed_action=int(proposed_action),
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                food_weight=float(food_weight),
+                capacity_penalty_scale=float(capacity_penalty_scale),
+                no_progress_steps=int(no_progress_steps),
+                food_pressure=float(food_pressure),
+            )
+        no_exit_state = self._compute_no_exit_state(
+            safe_option_count=int(safe_option_count),
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            food_weight=float(food_weight),
+            capacity_penalty_scale=float(capacity_penalty_scale),
+            food_pressure=float(food_pressure),
+        )
+        self._last_entered_no_exit_this_step = bool(no_exit_state and not bool(self._last_no_exit_state))
+        self._last_no_exit_state = bool(no_exit_state)
         self._last_proposed_viable = bool(effective_proposed_viable)
         if proposed_eval is not None:
             self._last_proposed_tail_reachable = bool(proposed_eval[1])
@@ -588,6 +630,83 @@ class GameplayController:
         # risk pressure is still low, keep PPO action and monitor progression.
         tail_unreachable = bool(proposed_eval is not None and not bool(proposed_eval[1]))
         if (not bool(effective_proposed_viable)) and (not risk_override_trigger) and (not tail_unreachable):
+            pre_no_exit_guard_enabled = bool(getattr(self._dynamic_cfg, "enable_pre_no_exit_guard", False))
+            if pre_no_exit_guard_enabled and proposed_eval is not None:
+                self._last_pre_no_exit_guard_candidate = True
+                guard_blockers: list[str] = []
+                max_safe_opts = max(1, int(getattr(self._dynamic_cfg, "pre_no_exit_guard_max_safe_options", 2)))
+                min_no_progress = max(0, int(getattr(self._dynamic_cfg, "pre_no_exit_guard_min_no_progress_steps", 24)))
+                no_exit_safe_opts = max(1, int(getattr(self._dynamic_cfg, "pre_no_exit_guard_no_exit_safe_options", 1)))
+                min_shortfall_gain = max(1, int(getattr(self._dynamic_cfg, "pre_no_exit_guard_min_shortfall_gain", 1)))
+                require_collapsing = bool(getattr(self._dynamic_cfg, "pre_no_exit_guard_require_collapsing_safe_options", True))
+                require_no_exit_signal = bool(getattr(self._dynamic_cfg, "pre_no_exit_guard_require_no_exit_signal", True))
+                safe_collapsing = bool(int(safe_option_count) < int(prev_safe_option_count))
+                near_no_exit_signal = bool(
+                    bool(no_exit_state)
+                    or bool(self._last_entered_no_exit_this_step)
+                    or int(safe_option_count) <= int(no_exit_safe_opts)
+                )
+                self._last_pre_no_exit_guard_safe_collapsing = bool(safe_collapsing)
+                self._last_pre_no_exit_guard_near_no_exit_signal = bool(near_no_exit_signal)
+                if int(safe_option_count) > int(max_safe_opts):
+                    guard_blockers.append("safe_options_not_low")
+                if int(no_progress_steps) < int(min_no_progress):
+                    guard_blockers.append("no_progress_below_floor")
+                if require_collapsing and not bool(safe_collapsing):
+                    guard_blockers.append("safe_options_not_collapsing")
+                if require_no_exit_signal and not bool(near_no_exit_signal):
+                    guard_blockers.append("no_exit_signal_missing")
+                alt_action = self._best_safe_action(
+                    proposed_action=int(proposed_action),
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    food_weight=food_weight,
+                    capacity_penalty_scale=capacity_penalty_scale,
+                )
+                self._last_pre_no_exit_guard_alt_action = int(alt_action)
+                if int(alt_action) == int(proposed_action):
+                    guard_blockers.append("no_alternative_action")
+                else:
+                    alt_eval = self._evaluate_action(
+                        board_cells=board_cells,
+                        snake=snake,
+                        direction=direction,
+                        food=food,
+                        action=int(alt_action),
+                        food_weight=food_weight,
+                        capacity_penalty_scale=capacity_penalty_scale,
+                    )
+                    if alt_eval is None:
+                        guard_blockers.append("alt_eval_unavailable")
+                    else:
+                        alt_viable = self._is_eval_viable(
+                            board_cells=board_cells,
+                            snake_len=len(snake),
+                            tail_reachable=bool(alt_eval[1]),
+                            capacity_shortfall=int(alt_eval[2]),
+                            food_pressure=food_pressure,
+                        )
+                        if not bool(alt_viable):
+                            guard_blockers.append("alt_not_viable")
+                        if not bool(alt_eval[1]):
+                            guard_blockers.append("alt_tail_unreachable")
+                        proposed_shortfall = int(proposed_eval[2])
+                        alt_shortfall = int(alt_eval[2])
+                        if int(proposed_shortfall - alt_shortfall) < int(min_shortfall_gain):
+                            guard_blockers.append("shortfall_gain_too_small")
+                        if not guard_blockers:
+                            self._decision_mode_now = ControlMode.ESCAPE
+                            self._dynamic.last_switch_reason = "pre_no_exit_guard"
+                            self._last_chosen_tail_reachable = bool(alt_eval[1])
+                            self._last_capacity_shortfall = int(alt_eval[2])
+                            self._last_pre_no_exit_guard_applied = True
+                            self._last_pre_no_exit_guard_blocker = "applied"
+                            return int(alt_action)
+                self._last_pre_no_exit_guard_blocker = (
+                    str(guard_blockers[0]) if guard_blockers else "conditions_not_met"
+                )
             if bool(getattr(self._dynamic_cfg, "enable_pocket_exit_guard", False)) and proposed_eval is not None:
                 max_safe_opts = max(1, int(getattr(self._dynamic_cfg, "pocket_exit_guard_max_safe_options", 2)))
                 min_no_progress = max(0, int(getattr(self._dynamic_cfg, "pocket_exit_guard_min_no_progress_steps", 32)))
@@ -1001,6 +1120,31 @@ class GameplayController:
         )
         return int(action)
 
+    def _compute_no_exit_state(
+        self,
+        *,
+        safe_option_count: int,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+        food_pressure: float,
+    ) -> bool:
+        if int(safe_option_count) > 1:
+            return False
+        tuples = self._last_action_eval_tuples
+        if not tuples:
+            return False
+        for action in ("0", "1", "2"):
+            row = tuples.get(str(action)) or {}
+            if not bool(row.get("eval_available", False)):
+                continue
+            if bool(row.get("viable", False)) and bool(row.get("tail_reachable", False)):
+                return False
+        return True
+
     def _choose_loop_escape_action(
         self,
         *,
@@ -1249,6 +1393,109 @@ class GameplayController:
                 best_key = key
                 best_action = int(action)
         return int(best_action)
+
+    def _build_runtime_action_eval_tuples(
+        self,
+        *,
+        proposed_action: int,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+        no_progress_steps: int,
+        food_pressure: float,
+    ) -> dict[str, dict[str, object]]:
+        board_total = max(1, int(board_cells * board_cells))
+        head = snake[0]
+        current_food_dist = int(abs(head[0] - food[0]) + abs(head[1] - food[1]))
+        visit_counts: dict[tuple[int, int], int] = {}
+        for point in self._recent_heads:
+            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        out: dict[str, dict[str, object]] = {}
+        for action in (0, 1, 2):
+            cand_dir = action_to_direction(direction, int(action))
+            cand_head = next_head(head, cand_dir)
+            danger = bool(is_danger(board_cells, snake, cand_head))
+            eval_result = self._evaluate_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(action),
+                food_weight=float(food_weight),
+                capacity_penalty_scale=float(capacity_penalty_scale),
+            )
+            reachable_cells = 0
+            if not bool(danger):
+                simulated = simulate_next_snake(snake, cand_head, food)
+                reachable_cells = int(reachable_cell_count(board_cells, simulated, simulated[0]))
+            next_food_dist = int(abs(cand_head[0] - food[0]) + abs(cand_head[1] - food[1]))
+            food_progress = int(current_food_dist - next_food_dist)
+            revisit_count = int(visit_counts.get(cand_head, 0))
+            row: dict[str, object] = {
+                "danger": bool(danger),
+                "reachable_cells": int(reachable_cells),
+                "reachable_ratio": float(float(reachable_cells) / float(board_total)),
+                "next_food_dist": int(next_food_dist),
+                "food_progress": int(food_progress),
+                "revisit_count": int(revisit_count),
+                "is_proposed_action": bool(int(action) == int(proposed_action)),
+                "food_pressure": float(food_pressure),
+                "no_progress_steps": int(no_progress_steps),
+                "eval_available": bool(eval_result is not None),
+                "score": None,
+                "tail_reachable": None,
+                "capacity_shortfall": None,
+                "viable": False,
+                "rank_inputs": None,
+            }
+            if eval_result is not None:
+                score, tail_ok, shortfall = eval_result
+                viable = self._is_eval_viable(
+                    board_cells=board_cells,
+                    snake_len=len(snake),
+                    tail_reachable=bool(tail_ok),
+                    capacity_shortfall=int(shortfall),
+                    food_pressure=float(food_pressure),
+                )
+                tactic_bias = float(
+                    self._tactic_memory.action_bias(
+                        features=self._decision_features(
+                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+                            food_pressure=float(food_pressure),
+                            no_progress_steps=int(no_progress_steps),
+                            cycle_repeat=False,
+                            imminent_danger=bool(danger),
+                            proposed_viable=bool(viable),
+                            proposed_eval=eval_result,
+                            chosen_eval=eval_result,
+                        ),
+                        action=int(action),
+                    )
+                ) if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)) else 0.0
+                rank_inputs = {
+                    "viable_bit": int(1 if bool(viable) else 0),
+                    "food_hit_bit": int(1 if cand_head == food else 0),
+                    "food_progress_pressure": float(food_progress if float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
+                    "score_blend": float(score) + (float(food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
+                    "revisit_penalty": float(-revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
+                    "tactic_bias": float(tactic_bias),
+                    "neg_next_food_dist": float(-next_food_dist),
+                    "same_as_proposed_bit": int(1 if int(action) == int(proposed_action) else 0),
+                }
+                row.update(
+                    {
+                        "score": float(score),
+                        "tail_reachable": bool(tail_ok),
+                        "capacity_shortfall": int(shortfall),
+                        "viable": bool(viable),
+                        "rank_inputs": rank_inputs,
+                    }
+                )
+            out[str(int(action))] = row
+        return out
 
     def _register_cycle_state(
         self,
@@ -1701,6 +1948,17 @@ class GameplayController:
             "risk_guard_candidate": bool(self._last_risk_guard_candidate),
             "risk_guard_eligible": bool(self._last_risk_guard_eligible),
             "risk_guard_blockers": [str(v) for v in self._last_risk_guard_blockers],
+            "pre_no_exit_guard_candidate": bool(self._last_pre_no_exit_guard_candidate),
+            "pre_no_exit_guard_applied": bool(self._last_pre_no_exit_guard_applied),
+            "pre_no_exit_guard_blocker": str(self._last_pre_no_exit_guard_blocker),
+            "pre_no_exit_guard_alt_action": (
+                None if self._last_pre_no_exit_guard_alt_action is None else int(self._last_pre_no_exit_guard_alt_action)
+            ),
+            "pre_no_exit_guard_safe_collapsing": bool(self._last_pre_no_exit_guard_safe_collapsing),
+            "pre_no_exit_guard_near_no_exit_signal": bool(self._last_pre_no_exit_guard_near_no_exit_signal),
+            "no_exit_state": bool(self._last_no_exit_state),
+            "entered_no_exit_this_step": bool(self._last_entered_no_exit_this_step),
+            "action_eval_tuples": {str(k): dict(v) for k, v in self._last_action_eval_tuples.items()},
             "no_progress_steps": int(no_progress_steps),
             "starvation_steps": int(starvation_steps),
             "starvation_limit": int(starvation_limit),
@@ -1858,3 +2116,11 @@ class GameplayController:
         self._decision_mode_now = ControlMode.PPO
         self._episode_stuck = False
         self._narrow_corridor_streak = 0
+        self._last_pre_no_exit_guard_candidate = False
+        self._last_pre_no_exit_guard_applied = False
+        self._last_pre_no_exit_guard_blocker = "disabled"
+        self._last_pre_no_exit_guard_alt_action = None
+        self._last_pre_no_exit_guard_safe_collapsing = False
+        self._last_pre_no_exit_guard_near_no_exit_signal = False
+        self._last_no_exit_state = False
+        self._last_entered_no_exit_this_step = False

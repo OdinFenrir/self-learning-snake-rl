@@ -56,6 +56,10 @@ def annotate_steps_until_death(rows: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
+def _has_terminal_death(rows: list[dict[str, Any]]) -> bool:
+    return any(bool(row.get("game_over", False)) for row in rows)
+
+
 def _seed_from_path(path: Path) -> int:
     stem = path.stem
     parts = stem.split("_")
@@ -71,6 +75,31 @@ def _latest_trace_dir(root: Path) -> Path | None:
     if not runs:
         return None
     return max(runs, key=lambda p: p.stat().st_mtime)
+
+
+def _trace_dir_has_death(trace_dir: Path) -> bool:
+    for trace_file in sorted(trace_dir.glob("seed_*.jsonl")):
+        for line in trace_file.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                row = json.loads(text)
+            except Exception:
+                continue
+            if isinstance(row, dict) and bool(row.get("game_over", False)):
+                return True
+    return False
+
+
+def _latest_trace_dir_with_death(root: Path) -> Path | None:
+    if not root.exists():
+        return None
+    runs = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+    for run in runs:
+        if _trace_dir_has_death(run):
+            return run
+    return None
 
 
 def _find_blind_indices(
@@ -102,6 +131,7 @@ def build_blind_spot_report(
     replay_window: int,
     max_spots: int,
     only_no_override: bool,
+    require_death: bool = False,
 ) -> dict[str, Any]:
     blind_spots: list[dict[str, Any]] = []
     per_seed_counts: dict[str, int] = {}
@@ -110,6 +140,8 @@ def build_blind_spot_report(
         rows = annotate_steps_until_death(_read_jsonl(trace_path))
         scanned_rows += int(len(rows))
         if not rows:
+            continue
+        if bool(require_death) and not bool(_has_terminal_death(rows)):
             continue
         seed = _seed_from_path(trace_path)
         idxs = _find_blind_indices(
@@ -157,6 +189,7 @@ def build_blind_spot_report(
             "max_steps_to_death": int(max_steps_to_death),
             "replay_window": int(replay_window),
             "only_no_override": bool(only_no_override),
+            "require_death": bool(require_death),
             "per_seed_blind_spot_counts": per_seed_counts,
         },
         "blind_spots": blind_spots,
@@ -177,6 +210,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--replay-window", type=int, default=30)
     parser.add_argument("--max-spots", type=int, default=50)
     parser.add_argument("--only-no-override", action="store_true")
+    parser.add_argument("--require-death", action="store_true")
     parser.add_argument("--out", type=str, default="artifacts/live_eval/blind_spot_replay.json")
     return parser.parse_args(argv)
 
@@ -185,8 +219,14 @@ def main() -> None:
     args = parse_args()
     root = Path(args.trace_root)
     if bool(args.latest_only):
-        latest = _latest_trace_dir(root)
+        latest = (
+            _latest_trace_dir_with_death(root)
+            if bool(args.require_death)
+            else _latest_trace_dir(root)
+        )
         if latest is None:
+            if bool(args.require_death):
+                raise SystemExit(f"No trace directories with deaths found under: {root}")
             raise SystemExit(f"No trace directories found under: {root}")
         trace_files = sorted(latest.glob("seed_*.jsonl"))
     else:
@@ -198,6 +238,7 @@ def main() -> None:
         replay_window=int(args.replay_window),
         max_spots=int(args.max_spots),
         only_no_override=bool(args.only_no_override),
+        require_death=bool(args.require_death),
     )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
