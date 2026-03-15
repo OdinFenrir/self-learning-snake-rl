@@ -86,6 +86,11 @@ class DynamicControlConfig:
     ppo_high_conf_override_guard_food_pressure_max: float = 0.6
     ppo_high_conf_override_guard_min_safe_options: int = 2
     ppo_high_conf_override_guard_min_shortfall_gain: int = 1
+    enable_pocket_exit_guard: bool = False
+    pocket_exit_guard_max_safe_options: int = 2
+    pocket_exit_guard_min_no_progress_steps: int = 32
+    pocket_exit_guard_min_food_pressure: float = 0.25
+    pocket_exit_guard_min_shortfall_gain: int = 2
     ppo_open_field_trust_food_pressure_max: float = 0.35
     narrow_corridor_trigger_steps: int = 6
     dynamic_warmup_steps: int = 120

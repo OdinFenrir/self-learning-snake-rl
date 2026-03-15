@@ -751,6 +751,71 @@ class TestGameplayController(unittest.TestCase):
         self.assertEqual(int(action), 0)
         self.assertEqual(str(ctrl.last_mode_switch_reason()), "ppo_tolerate_low_risk")
 
+    def test_pocket_exit_guard_disabled_keeps_tolerate_low_risk(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(
+                    enable_learned_arbiter=False,
+                    enable_pocket_exit_guard=False,
+                ),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, True, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(100.0, True, 5)),
+            patch.object(ctrl, "_best_safe_action", return_value=2),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(int(action), 0)
+        self.assertEqual(str(ctrl.last_mode_switch_reason()), "ppo_tolerate_low_risk")
+
+    def test_pocket_exit_guard_enabled_overrides_when_safer_alt_measured(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(
+                    enable_learned_arbiter=False,
+                    enable_pocket_exit_guard=True,
+                    pocket_exit_guard_max_safe_options=3,
+                    pocket_exit_guard_min_no_progress_steps=0,
+                    pocket_exit_guard_min_food_pressure=0.0,
+                    pocket_exit_guard_min_shortfall_gain=1,
+                ),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, True, True]),
+            patch.object(ctrl, "_is_food_reachable_after_action", side_effect=[False, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_best_safe_action", return_value=2),
+            patch.object(ctrl, "_evaluate_action", side_effect=[(100.0, True, 5), (120.0, True, 2)]),
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(int(action), 2)
+        self.assertEqual(str(ctrl.last_mode_switch_reason()), "pocket_exit_guard")
+
     def test_choose_safe_action_viable_ppo_path_overwrites_stale_reason(self) -> None:
         game = _FakeGame()
         agent = _FakeAgent()

@@ -582,6 +582,76 @@ class GameplayController:
         # risk pressure is still low, keep PPO action and monitor progression.
         tail_unreachable = bool(proposed_eval is not None and not bool(proposed_eval[1]))
         if (not bool(effective_proposed_viable)) and (not risk_override_trigger) and (not tail_unreachable):
+            if bool(getattr(self._dynamic_cfg, "enable_pocket_exit_guard", False)) and proposed_eval is not None:
+                max_safe_opts = max(1, int(getattr(self._dynamic_cfg, "pocket_exit_guard_max_safe_options", 2)))
+                min_no_progress = max(0, int(getattr(self._dynamic_cfg, "pocket_exit_guard_min_no_progress_steps", 32)))
+                min_food_pressure = float(getattr(self._dynamic_cfg, "pocket_exit_guard_min_food_pressure", 0.25))
+                min_shortfall_gain = max(1, int(getattr(self._dynamic_cfg, "pocket_exit_guard_min_shortfall_gain", 2)))
+                proposed_food_reachable = self._is_food_reachable_after_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    action=int(proposed_action),
+                )
+                pocket_exit_risk = bool(
+                    (not bool(proposed_food_reachable))
+                    and int(safe_option_count) <= int(max_safe_opts)
+                    and (
+                        int(no_progress_steps) >= int(min_no_progress)
+                        or float(food_pressure) >= float(min_food_pressure)
+                    )
+                )
+                if pocket_exit_risk:
+                    alt_action = self._best_safe_action(
+                        proposed_action=int(proposed_action),
+                        board_cells=board_cells,
+                        snake=snake,
+                        direction=direction,
+                        food=food,
+                        food_weight=food_weight,
+                        capacity_penalty_scale=capacity_penalty_scale,
+                    )
+                    if int(alt_action) != int(proposed_action):
+                        alt_eval = self._evaluate_action(
+                            board_cells=board_cells,
+                            snake=snake,
+                            direction=direction,
+                            food=food,
+                            action=int(alt_action),
+                            food_weight=food_weight,
+                            capacity_penalty_scale=capacity_penalty_scale,
+                        )
+                        if alt_eval is not None:
+                            alt_viable = self._is_eval_viable(
+                                board_cells=board_cells,
+                                snake_len=len(snake),
+                                tail_reachable=bool(alt_eval[1]),
+                                capacity_shortfall=int(alt_eval[2]),
+                                food_pressure=food_pressure,
+                            )
+                            alt_food_reachable = self._is_food_reachable_after_action(
+                                board_cells=board_cells,
+                                snake=snake,
+                                direction=direction,
+                                food=food,
+                                action=int(alt_action),
+                            )
+                            proposed_shortfall = int(proposed_eval[2])
+                            alt_shortfall = int(alt_eval[2])
+                            measured_gain = bool(
+                                bool(alt_viable)
+                                or (
+                                    bool(alt_food_reachable)
+                                    and int(proposed_shortfall - alt_shortfall) >= int(min_shortfall_gain)
+                                )
+                            )
+                            if measured_gain:
+                                self._decision_mode_now = ControlMode.ESCAPE
+                                self._dynamic.last_switch_reason = "pocket_exit_guard"
+                                self._last_chosen_tail_reachable = bool(alt_eval[1])
+                                self._last_capacity_shortfall = int(alt_eval[2])
+                                return int(alt_action)
             self._decision_mode_now = ControlMode.PPO
             self._dynamic.last_switch_reason = "ppo_tolerate_low_risk"
             if proposed_eval is not None:
@@ -1400,6 +1470,25 @@ class GameplayController:
     @staticmethod
     def _tail_is_reachable(board_cells: int, snake_after_move: list[tuple[int, int]]) -> bool:
         return bool(board_tail_is_reachable(board_cells, snake_after_move))
+
+    def _is_food_reachable_after_action(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        action: int,
+    ) -> bool:
+        if not snake:
+            return False
+        candidate_direction = action_to_direction(direction, int(action))
+        candidate_head = next_head(snake[0], candidate_direction)
+        if is_danger(board_cells, snake, candidate_head):
+            return False
+        simulated = self._simulate_next_snake(snake, candidate_head, food)
+        reachable = self._reachable_cells(board_cells, simulated, candidate_head)
+        return tuple(food) in reachable
 
     def telemetry_snapshot(self) -> GameplayTelemetrySnapshot:
         avg_conf = float(sum(self._death_confidences)) / float(len(self._death_confidences)) if self._death_confidences else 0.0
