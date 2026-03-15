@@ -7,7 +7,13 @@ The goal is simple: train an agent, watch it play live, measure failures, and it
 
 ### Live Training UI
 
+Phase 1:
+
 ![Snake Frame live training UI](docs/assets/live_training_ui.png)
+
+Phase 2:
+
+![Snake Frame live training UI phase 2](docs/assets/live_training_ui_phase2.png)
 
 ## Project Resume
 
