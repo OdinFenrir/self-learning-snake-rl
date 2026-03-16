@@ -977,6 +977,27 @@ class GameplayController:
                 direction=direction,
                 food=food,
             )
+        # Low-confidence fallback in controller-managed modes
+        low_conf_trigger_reasons = {"food_pressure", "risk", "no_progress_escape"}
+        if (
+            action is None
+            and mode in (ControlMode.SPACE_FILL, ControlMode.ESCAPE)
+            and self._last_predicted_confidence is not None
+            and float(self._last_predicted_confidence) < 0.60
+            and str(self._dynamic.last_switch_reason) in low_conf_trigger_reasons
+        ):
+            fallback_action = self._best_safe_action(
+                proposed_action=int(proposed_action),
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                food_weight=food_weight,
+                capacity_penalty_scale=capacity_penalty_scale,
+            )
+            if fallback_action is not None:
+                action = fallback_action
+                self._dynamic.last_switch_reason = "low_conf_fallback"
         elif action is None and mode == ControlMode.SPACE_FILL:
             if cycle_repeat:
                 action = self._choose_cycle_break_action(

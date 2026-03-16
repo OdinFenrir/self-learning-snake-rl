@@ -13,7 +13,7 @@ from snake_frame.settings import ObsConfig, PpoConfig, RewardConfig, Settings  #
 
 
 def main() -> None:
-    obs = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True)
+    obs = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True, use_free_space_features=True)
     reward = RewardConfig()
     settings = Settings()
     for use_subproc in (False, True):

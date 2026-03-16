@@ -83,7 +83,7 @@ def _build_agent(
     selector: ModelSelector,
 ) -> PpoSnakeAgent:
     settings = Settings()
-    obs_cfg = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True)
+    obs_cfg = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True, use_free_space_features=True)
     base_cfg = ppo_profile_config(ppo_profile, seed=int(seed))
     cfg = base_cfg.__class__(**(base_cfg.__dict__ | dict(ppo_overrides)))
     reward_cfg = RewardConfig(**(RewardConfig().__dict__ | dict(reward_overrides)))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .board_analysis import is_point_danger, reachable_space_ratio as board_reachable_space_ratio, simulate_next_snake, tail_path_length as board_tail_path_length
+from .board_analysis import is_point_danger, reachable_cell_count, reachable_space_ratio as board_reachable_space_ratio, simulate_next_snake, tail_path_length as board_tail_path_length
 from .settings import ObsConfig
 
 Direction = tuple[int, int]
@@ -58,6 +58,8 @@ def observation_size(obs_config: ObsConfig) -> int:
         base += 3
     if obs_config.use_tail_path_features:
         base += 8
+    if obs_config.use_free_space_features:
+        base += 1
     return base
 
 
@@ -177,5 +179,11 @@ def build_observation(
             simulated = _simulate_next_snake(snake, new_head, food)
             cand_tail_reachable, cand_tail_path_norm = _tail_path_features(board_cells, simulated)
             values.extend([cand_tail_reachable, cand_tail_path_norm])
+
+    if config.use_free_space_features:
+        free_cells = (board_cells * board_cells) - len(snake)
+        reachable = max(0, reachable_cell_count(board_cells, snake, head) - 1)
+        free_ratio = float(reachable) / float(max(1, free_cells))
+        values.append(float(free_ratio))
 
     return np.array(values, dtype=np.float32)

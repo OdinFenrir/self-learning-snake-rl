@@ -55,7 +55,7 @@ def _parse_seed_spec(raw: str) -> list[int]:
 
 def _build_agent(*, seed: int, state_dir: Path, profile: str) -> PpoSnakeAgent:
     settings = Settings()
-    obs_cfg = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True)
+    obs_cfg = ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True, use_free_space_features=True)
     reward_cfg = RewardConfig()
     ppo_cfg = ppo_profile_config(profile, seed=int(seed))
     return PpoSnakeAgent(
