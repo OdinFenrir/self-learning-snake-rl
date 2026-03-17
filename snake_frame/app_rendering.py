@@ -201,13 +201,13 @@ def draw_options_window(app) -> None:
     overlay.fill((0, 0, 0, 132))
     app.surface.blit(overlay, (0, 0))
 
-    # Create a centered, reasonably-sized options window
+    # Create a centered, reasonably-sized options window with more generous sizing
     window_width = app.layout.window.width
     window_height = app.layout.window.height
     
-    # Options window dimensions (percentage of window, but with reasonable limits)
-    panel_width = min(int(window_width * 0.8), 900)  # 80% of width, max 900px
-    panel_height = min(int(window_height * 0.8), 1000)  # 80% of height, max 1000px
+    # Options window dimensions (percentage of window, with increased limits for better fit)
+    panel_width = min(int(window_width * 0.85), 1000)  # 85% of width, max 1000px
+    panel_height = min(int(window_height * 0.85), 1100)  # 85% of height, max 1100px
     
     # Center the panel
     panel_x = (window_width - panel_width) // 2
@@ -218,10 +218,11 @@ def draw_options_window(app) -> None:
     pygame.draw.rect(app.surface, app.theme.graph_bg, panel, border_radius=12)
     pygame.draw.rect(app.surface, app.theme.board_frame_border, panel, width=2, border_radius=12)
 
-    pad = 20  # Inner padding for the panel content
-    row_h = max(32, int(app.design_tokens.components.button_row_height))
-    gap = max(8, int(app.design_tokens.spacing.section_gap))
-    shortcuts_row_h = 28  # Height of each shortcut row
+    # Reduced padding for better space usage
+    pad = 15  # Inner padding for the panel content (reduced from 20)
+    row_h = max(28, int(app.design_tokens.components.button_row_height) * 0.9)  # Slightly reduced row height
+    gap = max(6, int(app.design_tokens.spacing.section_gap) * 0.8)  # Reduced gap between items
+    shortcuts_row_h = 24  # Reduced height of each shortcut row
 
     # Header
     head = safe_render_text(app, "Options", app.theme.section_header, small=False)
@@ -243,7 +244,7 @@ def draw_options_window(app) -> None:
         # Center title horizontally within panel
         title_x = panel.x + (panel.width - title_surf.get_width()) // 2
         app.surface.blit(title_surf, (title_x, row_y))
-        row_y += int(row_h * 0.8)  # Tighter spacing after title
+        row_y += int(row_h * 0.7)  # Even tighter spacing after title
         for btn in buttons:
             # Center buttons horizontally within panel
             btn_x = panel.x + (panel.width - btn_w) // 2
@@ -251,11 +252,15 @@ def draw_options_window(app) -> None:
             btn.draw(app.surface, app.small_font, pygame.mouse.get_pos())
             row_y += row_h + gap
     
-    # Shortcuts section
-    shortcuts_start_y = int(row_y + 6)
+    # Shortcuts section with bounds checking
+    shortcuts_start_y = int(row_y + 4)
+    # Ensure we have enough space for shortcuts
+    if shortcuts_start_y + 40 + (len(app._SHORTCUTS) * shortcuts_row_h) > panel.bottom - pad * 2:
+        # If not enough space, reduce shortcuts row height
+        shortcuts_row_h = max(20, (panel.bottom - pad * 2 - shortcuts_start_y - 40) // len(app._SHORTCUTS))
     draw_shortcuts_list(app, panel=panel, start_y=shortcuts_start_y, pad=pad)
     shortcuts_end_y = int(shortcuts_start_y + 30 + (len(app._SHORTCUTS) * shortcuts_row_h))
-    close_y = min(int(panel.bottom - row_h - 12), int(shortcuts_end_y + gap))
+    close_y = min(int(panel.bottom - row_h - 8), int(shortcuts_end_y + gap // 2))
     app.btn_options_close.rect = pygame.Rect(panel.x + pad, close_y, btn_w, row_h)
     app.btn_options_close.draw(app.surface, app.small_font, pygame.mouse.get_pos())
 
@@ -264,22 +269,36 @@ def draw_shortcuts_list(app, *, panel: pygame.Rect, start_y: int, pad: int) -> N
     title = safe_render_text(app, "Shortcuts", app.theme.section_header, small=False)
     app.surface.blit(title, (panel.x + pad, int(start_y)))
     y = int(start_y + 30)
-    key_w = max(112, int(panel.width * 0.28))
-    max_desc_w = max(80, int(panel.width - (pad * 2) - key_w - 12))
+    key_w = max(100, int(panel.width * 0.25))  # Reduced key width
+    max_desc_w = max(60, int(panel.width - (pad * 2) - key_w - 8))  # Reduced description width
     for key, desc in app._SHORTCUTS:
-        key_rect = pygame.Rect(panel.x + pad, y, key_w, 22)
-        pygame.draw.rect(app.surface, app.theme.badge_bg, key_rect, border_radius=7)
-        pygame.draw.rect(app.surface, app.theme.badge_border, key_rect, width=1, border_radius=7)
+        # Check if we have enough vertical space
+        if y + 25 > panel.bottom - pad - 20:  # Leave space for close button
+            break
+        key_rect = pygame.Rect(panel.x + pad, y, key_w, 20)  # Slightly reduced height
+        pygame.draw.rect(app.surface, app.theme.badge_bg, key_rect, border_radius=5)
+        pygame.draw.rect(app.surface, app.theme.badge_border, key_rect, width=1, border_radius=5)
         key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
+        # Ensure key text fits
+        if key_surf.get_width() > key_w - 8:
+            key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
+            # Truncate if still too long
+            while key_surf.get_width() > key_w - 8 and len(key) > 0:
+                key = key[:-1]
+                if len(key) == 0:
+                    key_surf = safe_render_text(app, "", app.theme.badge_text, small=True)
+                    break
+                key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
         app.surface.blit(key_surf, key_surf.get_rect(center=key_rect.center))
         desc_surf = safe_render_text(app, desc, app.theme.status_color, small=True)
+        # Ensure description text fits
         if desc_surf.get_width() > max_desc_w:
             txt = desc
-            while txt:
+            while txt and desc_surf.get_width() > max_desc_w:
                 txt = txt[:-1]
-                clipped = txt.rstrip() + "..."
-                desc_surf = safe_render_text(app, clipped, app.theme.status_color, small=True)
-                if desc_surf.get_width() <= max_desc_w:
+                if len(txt) == 0:
+                    desc_surf = safe_render_text(app, "", app.theme.status_color, small=True)
                     break
-        app.surface.blit(desc_surf, (int(key_rect.right + 10), int(y + 1)))
-        y += 28
+                desc_surf = safe_render_text(app, txt + "...", app.theme.status_color, small=True)
+        app.surface.blit(desc_surf, (int(key_rect.right + 8), int(y + 2)))
+        y += 24  # Reduced line spacing
