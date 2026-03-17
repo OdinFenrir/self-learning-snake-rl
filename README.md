@@ -3,6 +3,14 @@
 An interactive Snake RL lab built with `pygame` and PPO.  
 The goal is simple: train an agent, watch it play live, measure failures, and iteratively improve behavior with reproducible data.
 
+## What This Demonstrates
+
+- Built a complete desktop ML application with live UI, persistence, and worker-thread training
+- Designed regression tooling for worst-case seed analysis and focused debugging traces
+- Enforced evaluation discipline with paired holdout runs (PPO-only vs controller-on) and contamination guards
+- Implemented learned controller memory (online arbiter + clustered tactic memory) that persists across sessions
+- Handled failure recovery for local persisted state with atomic writes and rollback
+
 ## Demo
 
 ### Live Training UI
@@ -195,11 +203,13 @@ Supporting local artifacts (generated during validation, typically not committed
 
 ## CI / Automation
 
-Workflow files exist in `.github/workflows/`.
+Workflow definitions exist in `.github/workflows/` for:
+- Linting
+- Test execution
+- Render regression checks
+- Smoke performance gates
 
-Note:
-- GitHub Actions jobs are currently disabled in workflow config for this repository.
-- Full validation is run locally with the commands above.
+Validation is run locally (ML training/evaluation requires GPU and long runtimes not suited for hosted CI). Full validation commands are documented above.
 
 ## Project Structure
 

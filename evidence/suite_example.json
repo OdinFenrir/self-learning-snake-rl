@@ -1,0 +1,511 @@
+{
+  "generated_at_utc": "2026-03-17T09:24:48.605213+00:00",
+  "suite_started_at_unix_s": 1773738327.9459972,
+  "max_steps": 5000,
+  "model_selector": "last",
+  "ppo_only": {
+    "generated_at_utc": "2026-03-17T09:12:49.471164+00:00",
+    "mode": "ppo_only",
+    "model_selector": "last",
+    "max_steps": 5000,
+    "trace_enabled": false,
+    "trace_tag": "",
+    "scores": {
+      "count": 30,
+      "mean": 150.63333333333333,
+      "median": 159.0,
+      "p90": 167.1,
+      "best": 170,
+      "min": 84
+    },
+    "rows": [
+      {
+        "seed": 17001,
+        "score": 170
+      },
+      {
+        "seed": 17002,
+        "score": 158
+      },
+      {
+        "seed": 17003,
+        "score": 137
+      },
+      {
+        "seed": 17004,
+        "score": 158
+      },
+      {
+        "seed": 17005,
+        "score": 162
+      },
+      {
+        "seed": 17006,
+        "score": 164
+      },
+      {
+        "seed": 17007,
+        "score": 146
+      },
+      {
+        "seed": 17008,
+        "score": 156
+      },
+      {
+        "seed": 17009,
+        "score": 168
+      },
+      {
+        "seed": 17010,
+        "score": 160
+      },
+      {
+        "seed": 17011,
+        "score": 146
+      },
+      {
+        "seed": 17012,
+        "score": 151
+      },
+      {
+        "seed": 17013,
+        "score": 157
+      },
+      {
+        "seed": 17014,
+        "score": 166
+      },
+      {
+        "seed": 17015,
+        "score": 166
+      },
+      {
+        "seed": 17016,
+        "score": 109
+      },
+      {
+        "seed": 17017,
+        "score": 166
+      },
+      {
+        "seed": 17018,
+        "score": 157
+      },
+      {
+        "seed": 17019,
+        "score": 108
+      },
+      {
+        "seed": 17020,
+        "score": 168
+      },
+      {
+        "seed": 17021,
+        "score": 161
+      },
+      {
+        "seed": 17022,
+        "score": 154
+      },
+      {
+        "seed": 17023,
+        "score": 161
+      },
+      {
+        "seed": 17024,
+        "score": 84
+      },
+      {
+        "seed": 17025,
+        "score": 162
+      },
+      {
+        "seed": 17026,
+        "score": 126
+      },
+      {
+        "seed": 17027,
+        "score": 104
+      },
+      {
+        "seed": 17028,
+        "score": 164
+      },
+      {
+        "seed": 17029,
+        "score": 163
+      },
+      {
+        "seed": 17030,
+        "score": 167
+      }
+    ]
+  },
+  "controller_on": {
+    "generated_at_utc": "2026-03-17T09:24:48.517082+00:00",
+    "mode": "controller_on",
+    "model_selector": "last",
+    "max_steps": 5000,
+    "trace_enabled": false,
+    "trace_tag": "",
+    "scores": {
+      "count": 30,
+      "mean": 150.2,
+      "median": 152.5,
+      "p90": 163.5,
+      "best": 174,
+      "min": 100
+    },
+    "rows": [
+      {
+        "seed": 17001,
+        "score": 174
+      },
+      {
+        "seed": 17002,
+        "score": 152
+      },
+      {
+        "seed": 17003,
+        "score": 144
+      },
+      {
+        "seed": 17004,
+        "score": 159
+      },
+      {
+        "seed": 17005,
+        "score": 174
+      },
+      {
+        "seed": 17006,
+        "score": 154
+      },
+      {
+        "seed": 17007,
+        "score": 154
+      },
+      {
+        "seed": 17008,
+        "score": 156
+      },
+      {
+        "seed": 17009,
+        "score": 146
+      },
+      {
+        "seed": 17010,
+        "score": 159
+      },
+      {
+        "seed": 17011,
+        "score": 168
+      },
+      {
+        "seed": 17012,
+        "score": 142
+      },
+      {
+        "seed": 17013,
+        "score": 163
+      },
+      {
+        "seed": 17014,
+        "score": 153
+      },
+      {
+        "seed": 17015,
+        "score": 140
+      },
+      {
+        "seed": 17016,
+        "score": 114
+      },
+      {
+        "seed": 17017,
+        "score": 152
+      },
+      {
+        "seed": 17018,
+        "score": 152
+      },
+      {
+        "seed": 17019,
+        "score": 160
+      },
+      {
+        "seed": 17020,
+        "score": 156
+      },
+      {
+        "seed": 17021,
+        "score": 100
+      },
+      {
+        "seed": 17022,
+        "score": 149
+      },
+      {
+        "seed": 17023,
+        "score": 158
+      },
+      {
+        "seed": 17024,
+        "score": 142
+      },
+      {
+        "seed": 17025,
+        "score": 161
+      },
+      {
+        "seed": 17026,
+        "score": 142
+      },
+      {
+        "seed": 17027,
+        "score": 159
+      },
+      {
+        "seed": 17028,
+        "score": 138
+      },
+      {
+        "seed": 17029,
+        "score": 149
+      },
+      {
+        "seed": 17030,
+        "score": 136
+      }
+    ],
+    "controller_telemetry_rows": [
+      {
+        "seed": 17001,
+        "score": 174,
+        "decisions": 5000,
+        "interventions": 45,
+        "interventions_pct": 0.9
+      },
+      {
+        "seed": 17002,
+        "score": 152,
+        "decisions": 5000,
+        "interventions": 170,
+        "interventions_pct": 3.4
+      },
+      {
+        "seed": 17003,
+        "score": 144,
+        "decisions": 5000,
+        "interventions": 74,
+        "interventions_pct": 1.48
+      },
+      {
+        "seed": 17004,
+        "score": 159,
+        "decisions": 5000,
+        "interventions": 108,
+        "interventions_pct": 2.16
+      },
+      {
+        "seed": 17005,
+        "score": 174,
+        "decisions": 5000,
+        "interventions": 78,
+        "interventions_pct": 1.56
+      },
+      {
+        "seed": 17006,
+        "score": 154,
+        "decisions": 4127,
+        "interventions": 75,
+        "interventions_pct": 1.817300702689605
+      },
+      {
+        "seed": 17007,
+        "score": 154,
+        "decisions": 4501,
+        "interventions": 30,
+        "interventions_pct": 0.6665185514330149
+      },
+      {
+        "seed": 17008,
+        "score": 156,
+        "decisions": 5000,
+        "interventions": 97,
+        "interventions_pct": 1.94
+      },
+      {
+        "seed": 17009,
+        "score": 146,
+        "decisions": 4463,
+        "interventions": 80,
+        "interventions_pct": 1.7925162446784675
+      },
+      {
+        "seed": 17010,
+        "score": 159,
+        "decisions": 5000,
+        "interventions": 76,
+        "interventions_pct": 1.52
+      },
+      {
+        "seed": 17011,
+        "score": 168,
+        "decisions": 4670,
+        "interventions": 43,
+        "interventions_pct": 0.9207708779443254
+      },
+      {
+        "seed": 17012,
+        "score": 142,
+        "decisions": 4739,
+        "interventions": 87,
+        "interventions_pct": 1.8358303439544208
+      },
+      {
+        "seed": 17013,
+        "score": 163,
+        "decisions": 5000,
+        "interventions": 84,
+        "interventions_pct": 1.68
+      },
+      {
+        "seed": 17014,
+        "score": 153,
+        "decisions": 5000,
+        "interventions": 111,
+        "interventions_pct": 2.22
+      },
+      {
+        "seed": 17015,
+        "score": 140,
+        "decisions": 3874,
+        "interventions": 84,
+        "interventions_pct": 2.1683014971605576
+      },
+      {
+        "seed": 17016,
+        "score": 114,
+        "decisions": 2943,
+        "interventions": 30,
+        "interventions_pct": 1.019367991845056
+      },
+      {
+        "seed": 17017,
+        "score": 152,
+        "decisions": 4858,
+        "interventions": 171,
+        "interventions_pct": 3.5199670646356527
+      },
+      {
+        "seed": 17018,
+        "score": 152,
+        "decisions": 4025,
+        "interventions": 18,
+        "interventions_pct": 0.4472049689440994
+      },
+      {
+        "seed": 17019,
+        "score": 160,
+        "decisions": 5000,
+        "interventions": 82,
+        "interventions_pct": 1.64
+      },
+      {
+        "seed": 17020,
+        "score": 156,
+        "decisions": 5000,
+        "interventions": 115,
+        "interventions_pct": 2.3
+      },
+      {
+        "seed": 17021,
+        "score": 100,
+        "decisions": 2344,
+        "interventions": 59,
+        "interventions_pct": 2.5170648464163823
+      },
+      {
+        "seed": 17022,
+        "score": 149,
+        "decisions": 4728,
+        "interventions": 46,
+        "interventions_pct": 0.9729272419627749
+      },
+      {
+        "seed": 17023,
+        "score": 158,
+        "decisions": 5000,
+        "interventions": 56,
+        "interventions_pct": 1.12
+      },
+      {
+        "seed": 17024,
+        "score": 142,
+        "decisions": 4933,
+        "interventions": 74,
+        "interventions_pct": 1.5001013581998783
+      },
+      {
+        "seed": 17025,
+        "score": 161,
+        "decisions": 4809,
+        "interventions": 68,
+        "interventions_pct": 1.4140153878145145
+      },
+      {
+        "seed": 17026,
+        "score": 142,
+        "decisions": 3775,
+        "interventions": 17,
+        "interventions_pct": 0.4503311258278146
+      },
+      {
+        "seed": 17027,
+        "score": 159,
+        "decisions": 5000,
+        "interventions": 68,
+        "interventions_pct": 1.36
+      },
+      {
+        "seed": 17028,
+        "score": 138,
+        "decisions": 3858,
+        "interventions": 42,
+        "interventions_pct": 1.088646967340591
+      },
+      {
+        "seed": 17029,
+        "score": 149,
+        "decisions": 5000,
+        "interventions": 148,
+        "interventions_pct": 2.96
+      },
+      {
+        "seed": 17030,
+        "score": 136,
+        "decisions": 4458,
+        "interventions": 67,
+        "interventions_pct": 1.502916105877075
+      }
+    ],
+    "mean_interventions_pct": 1.6624593758908077
+  },
+  "comparison": {
+    "mean_delta_controller_minus_ppo": -0.4333333333333371,
+    "median_delta_controller_minus_ppo": -6.5,
+    "p90_delta_controller_minus_ppo": -3.5999999999999943,
+    "mean_ratio_controller_over_ppo": 0.9971232573578225,
+    "paired_seed_count": 30,
+    "paired_worse_count": 17,
+    "paired_improved_count": 12,
+    "paired_equal_count": 1,
+    "paired_mean_delta_controller_minus_ppo": -0.43333333333333335,
+    "paired_median_delta_controller_minus_ppo": -2.0,
+    "mean_interventions_pct": 1.6624593758908077
+  },
+  "source_files": {
+    "live_eval_dir": "D:\\MyProjects\\pygame_snake_frame\\artifacts\\live_eval"
+  }
+}
