@@ -55,6 +55,67 @@ At each game decision:
 3. The system either trusts PPO or applies controller logic (`escape` / `space_fill` behavior).
 4. Outcomes are logged into telemetry and artifacts.
 
+### Decision Stack
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        GAME STATE                                │
+│   (snake body, head, food, grid, death_reason)                 │
+└──────────────────────────┬────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    OBSERVATION LAYER                             │
+│   Build features: extended, path, tail_path, free_space, trend   │
+│   Output: 31-dim feature vector                                  │
+└──────────────────────────┬────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       PPO INFERENCE                              │
+│   Input: observation                                            │
+│   Output: action logits + confidence score                      │
+└──────────────────────────┬────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   RISK EVALUATION                                │
+│   - Danger: immediate death if move?                            │
+│   - Space viability: would this trap the snake?                  │
+│   - Food pressure: how far from food?                           │
+│   - Cycle signals: are we looping?                              │
+│   - Tail reachability: can we reach tail?                       │
+└──────────────────────────┬────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   CONTROLLER ARBITRATION                         │
+│                                                                   │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+│   │    PPO      │    │   ESCAPE    │    │ SPACE_FILL  │        │
+│   │   (trust)   │    │  (cycles)   │    │ (no progress)│        │
+│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘        │
+│          │                   │                   │                │
+│          ▼                   ▼                   ▼                │
+│   ┌─────────────────────────────────────────────────────┐       │
+│   │              LEARNED MEMORY                          │       │
+│   │   arbiter_model.json  +  tactic_memory.json         │       │
+│   │   (online learned arbitration + clustered tactics)   │       │
+│   └──────────────────────┬──────────────────────────────┘       │
+│                          │                                       │
+│                          ▼                                       │
+│                 FINAL ACTION QUEUE                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Controller Modes
+
+- **PPO** (default): Trust the model's prediction when confidence is high and risk is low
+- **ESCAPE**: Activated on detected cycle/repeat patterns - breaks loops
+- **SPACE_FILL**: Activated on no-progress - fills space efficiently to survive longer
+
+The controller learns from experience via `arbiter_model.json` (online) and `tactic_memory.json` (clustered patterns).
+
 During training:
 1. PPO runs in vectorized environments.
 2. Evaluation/checkpoints are saved under `state/ppo/<experiment_name>/`. The default baseline path is `state/ppo/v2/`.
