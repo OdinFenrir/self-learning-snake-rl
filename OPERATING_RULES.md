@@ -8,8 +8,13 @@
 
 ## Canonical Baseline
 
-- **Canonical verified baseline suite:** `artifacts/live_eval/suites/suite_<known_baseline>.json`
-- **Canonical baseline commit:** specific git hash (document when creating baseline)
+For the current verified baseline, see `TRUSTED_BASELINES.md`.
+
+Summary:
+- **Baseline experiment:** `v2` (default)
+- **Observation schema:** 31-dim (all ObsConfig flags = true)
+- **Suite artifact:** `artifacts/live_eval/suites/suite_20260317_092448.json`
+- **Trust cutoff:** commit `cc22fee` onward
 
 ## Before Any Code Change
 

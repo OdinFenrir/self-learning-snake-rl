@@ -16,8 +16,9 @@ The architecture is optimized for iterative experimentation:
 
 ## 2. Runtime Composition
 
-Primary composition entry:
-- `snake_frame/app.py`
+Entry points:
+- `snake_frame/app.py`: Application entry and runtime bootstrap
+- `snake_frame/app_factory.py`: Composition/wiring layer for runtime dependencies
 
 Factory wiring:
 - `snake_frame/app_factory.py`
@@ -53,9 +54,11 @@ Important telemetry fields include:
 
 ## 4. Learning Memory Extensions
 
-Persisted under `state/ppo/v2/`:
+Persisted under `state/ppo/<experiment_name>/`:
 - `arbiter_model.json`
 - `tactic_memory.json`
+
+Default baseline uses `state/ppo/v2/`.
 
 Purpose:
 - retain controller-side adaptation signals between sessions
@@ -65,17 +68,26 @@ Purpose:
 
 ### Model Artifacts
 
-- `state/ppo/v2/last_model.zip`
-- `state/ppo/v2/best_model.zip`
-- `state/ppo/v2/best_score_model.zip`
-- `state/ppo/v2/vecnormalize.pkl`
-- `state/ppo/v2/metadata.json`
+Persisted under `state/ppo/<experiment_name>/`:
+- `last_model.zip`
+- `best_model.zip`
+- `best_score_model.zip`
+- `vecnormalize.pkl`
+- `metadata.json`
+
+Default baseline uses `state/ppo/v2/`.
 
 ### Evaluation Artifacts
 
+For trustworthy comparisons, use suite artifacts (NOT single-run summaries):
+- `artifacts/live_eval/suites/suite_<timestamp>.json` (full paired evaluation)
+- `artifacts/live_eval/suites/latest_suite.json` (most recent suite)
+
+Single-run summaries (less authoritative):
 - `artifacts/live_eval/latest_summary.json`
-- `artifacts/live_eval/suites/latest_suite.json`
-- `artifacts/live_eval/worst10_latest.json`
+- `artifacts/live_eval/summary_*.json`
+
+See `TRUSTED_BASELINES.md` for authoritative baseline references.
 
 ### Focused Trace Artifacts
 
