@@ -107,22 +107,27 @@ def build_controls(
     window_h = int(settings.window_height_px or settings.window_px)
     right_bottom = int(window_h - graph_margin - int(tokens.spacing.right_graph_bottom_reserve))
     section_header_h = max(24, int(tokens.typography.status_line_min_height + tokens.spacing.right_header_block_gap))
-    # Keep reserved badge stack height aligned with runtime rendering:
-    # rendered badge height is max(badge_min_height, font_line_height + 2*padding_y).
-    badge_row_h = max(
-        int(tokens.components.badge_min_height),
-        int(status_line_height + (2 * int(tokens.components.badge_padding_y))),
-    )
-    badges_h = int((badge_row_h + int(tokens.spacing.badge_gap_y)) * max(1, int(tokens.components.max_badge_rows)))
     section_gap = int(tokens.spacing.section_gap_large)
-    # Add explicit breathing room between badge rows and chart area.
-    # This avoids the visual "touching" between the last KPI badge row and graph header.
-    badges_to_graph_gap = max(6, int(tokens.spacing.right_header_block_gap))
-    total_non_graph_h = (2 * section_header_h) + (2 * badges_h) + (3 * section_gap) + (2 * badges_to_graph_gap)
-    available_for_graphs = max(300, int(right_bottom - right_top - total_non_graph_h))
-    each_graph_h = max(int(tokens.components.graph_min_height_large), int(available_for_graphs // 2))
-    training_graph_y = int(right_top + section_header_h + badges_h + section_gap + badges_to_graph_gap)
-    run_graph_y = int(training_graph_y + each_graph_h + section_gap + section_header_h + badges_h + badges_to_graph_gap)
+    # Fixed grid layout: reserve fixed heights for each section
+    # This prevents text from moving dynamically or overlapping graphs
+    # Fixed heights: header=24, badges_area=60, gap=10, graph=dynamic
+    fixed_header_h = 24
+    fixed_badges_h = 60
+    fixed_gap = 10
+    
+    # Calculate available space for graphs
+    total_non_graph = (2 * fixed_header_h) + (2 * fixed_badges_h) + (3 * fixed_gap)
+    available_graph_h = max(300, int(right_bottom - right_top - total_non_graph))
+    each_graph_h = max(int(tokens.components.graph_min_height_large), int(available_graph_h // 2))
+    
+    # Fixed grid positions
+    training_header_y = right_top
+    training_badges_y = training_header_y + fixed_header_h + fixed_gap
+    training_graph_y = training_badges_y + fixed_badges_h + fixed_gap
+    
+    run_header_y = training_graph_y + each_graph_h + fixed_gap
+    run_badges_y = run_header_y + fixed_header_h + fixed_gap
+    run_graph_y = run_badges_y + fixed_badges_h + fixed_gap
 
     training_graph_rect = pygame.Rect(
         right_inner_x,

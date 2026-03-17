@@ -17,11 +17,11 @@ from snake_frame.game import SnakeGame
 pytestmark = pytest.mark.render
 
 _EXPECTED_HASHES = {
-    "empty_default": "a9e415d3fe83f67bfe1e92807f7b219be0612169f501428898113300a45302d5",
-    "training_populated": "93445f775e1c92275c0d83d847de57c2d0c6bf7e828a944d8dc7172e8357d2bb",
-    "run_populated": "720f2eed252c6e11b6c864121060dbebf6bd8a7215865b4797f2e85807706584",
-    "small_window": "2beda9230eff33b0b2f15b22410f9d539ee18e35516ab1000ef3cbcf6515ccb0",
-    "large_window": "aeb42d7b4806a79c173ea80ff7df2dafc001ca5890bacc1a4b0f6e9c1a49fbb9",
+    "empty_default": "8aca3f856733a180daa6ea0fe1d1625323cef5746d41b8b1ac389ba341f4ceb6",
+    "training_populated": "64e146acad4a52c684788bdfd667c61cec6276079829c9b7823e0538df2a11f6",
+    "run_populated": "fba6cd1f7b274f986c0a562d64080d41a62d65e51dc35957643c5cd86d1af8b3",
+    "small_window": "b3dc0bbc1be5aadc39f36c57478e27642c6db30b84e0e9102c235e756cba446f",
+    "large_window": "765c9ce5c4f3c12bba10a75b52a663e36f56db304c0ed56815108c366e753bfb",
 }
 
 
