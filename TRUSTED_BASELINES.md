@@ -1,0 +1,85 @@
+# Trusted Baselines
+
+This file declares the trust boundary between pre-discipline and disciplined artifact eras.
+
+---
+
+## Pre-Discipline Era (Historical)
+
+**Artifacts before commit `cc22fee` (March 17, 2026) are considered historical.**
+
+These artifacts may be useful for:
+- Debugging
+- Forensic analysis
+- Understanding past behavior
+
+But they are **NOT suitable for benchmark claims** because:
+- Experiment isolation did not exist
+- Artifact authority rules were not established
+- Some runs used unstable or incorrect assumptions
+- `latest_summary.json` was easy to misread as authoritative
+- No explicit operating rules existed
+
+---
+
+## Disciplined Era (Trustworthy)
+
+**Artifacts from commit `cc22fee` onward are benchmark-eligible IF they follow these rules:**
+
+### Requirements for Trustworthy Claims
+
+1. **Git commit** - must cite the exact commit hash
+2. **Experiment name** - must be explicit (`v2` for baseline, or custom name for experiments)
+3. **Matching metadata.json** - must be cited alongside any comparison
+4. **Suite artifact** - must use `artifacts/live_eval/suites/suite_*.json` (NOT `latest_summary.json`)
+5. **Known comparison context** - must specify: ppo_only vs controller_on, seed set, model selector
+
+### Current Baseline
+
+| Artifact | Value |
+|----------|-------|
+| Experiment name | `v2` |
+| Observation schema | 31-dim (all ObsConfig flags = true) |
+| Model | `state/ppo/v2/last_model.zip` |
+| Metadata | `state/ppo/v2/metadata.json` |
+| Latest suite | `artifacts/live_eval/suites/suite_20260317_092448.json` |
+| Suite mean (ppo_only) | 150.63 |
+| Suite mean (controller_on) | 150.20 |
+| Commit | `7c05191` (docs update) |
+
+---
+
+## Artifact Classification Guide
+
+| Classification | Use For | Don't Use For |
+|---------------|---------|---------------|
+| **Canonical** | Current baseline claims | N/A |
+| **Comparable** | Trend analysis, non-baseline comparisons | Definitive benchmark claims |
+| **Historical** | Debugging, understanding past behavior | Performance claims |
+| **Not Comparable** | Nothing | Any comparison to baseline |
+| **Unknown** | Nothing | Any claims |
+
+---
+
+## How to Preserve a Baseline
+
+Before any code change that could affect model behavior:
+
+```bash
+# 1. Freeze model artifacts
+cp -r state/ppo/v2 state/ppo/v2_BASELINE
+
+# 2. Freeze suite artifact  
+cp artifacts/live_eval/suites/latest_suite.json artifacts/live_eval/suites/suite_BASELINE_$(date +%Y%m%d).json
+
+# 3. Document commit
+git log -1 --format="%H %s" > state/ppo/v2_BASELINE/commit.txt
+```
+
+---
+
+## Key Cutoff Commit
+
+**`cc22fee`** - First commit with experiment isolation support
+
+This is the formal boundary. Artifacts created before this commit are from the pre-discipline era.
