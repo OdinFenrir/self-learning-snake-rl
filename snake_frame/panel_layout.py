@@ -39,15 +39,24 @@ class RightPanelLayout:
 
 
 # Fixed layout constants for right panel
+_UTILITY_ROW_Y = 0
+_UTILITY_ROW_HEIGHT = 0    # Removed top space as requested
+_HEADER_TO_BADGE_GAP = 30  # Increased for more space UNDER header and badges
+_BADGE_TO_GRAPH_GAP = 20   # Increased for more space between badges and graph
+_HEADER_HEIGHT = 24
+_BADGES_HEIGHT = 60
+_SECTION_GAP = 80          # Increased for more space between sections (training KPIs to run KPIs)
+_GRAPH_Y_OFFSET = 2        # Small offset to move graphs down slightly
+
 _RIGHT_PANEL_CONSTANTS = {
     "standard": {
-        "utility_row_y": 0,
-        "utility_row_height": 40,
-        "header_to_badge_gap": 10,
-        "badge_to_graph_gap": 10,
-        "header_height": 24,
-        "badges_height": 60,
-        "section_gap": 20,
+        "utility_row_y": _UTILITY_ROW_Y,
+        "utility_row_height": _UTILITY_ROW_HEIGHT,
+        "header_to_badge_gap": _HEADER_TO_BADGE_GAP,
+        "badge_to_graph_gap": _BADGE_TO_GRAPH_GAP,
+        "header_height": _HEADER_HEIGHT,
+        "badges_height": _BADGES_HEIGHT,
+        "section_gap": _SECTION_GAP,
     },
 }
 
@@ -72,30 +81,43 @@ def build_right_panel_layout(
     utility_y = const["utility_row_y"]
     utility_h = const["utility_row_height"]
     
-    training_header_y = utility_y + utility_h + const["section_gap"]
-    training_header_h = const["header_height"]
-    
-    training_badges_y = training_header_y + training_header_h + const["header_to_badge_gap"]
-    training_badges_h = const["badges_height"]
-    
-    training_graph_y = training_badges_y + training_badges_h + const["badge_to_graph_gap"]
-    
-    # Run section starts after training graph
-    # Calculate training graph height dynamically to fit window
     window_h = int(settings.window_height_px or settings.window_px)
     
-    # Reserve space for run section
-    run_header_y = training_graph_y + 200  # Reserve ~200 for training graph
-    run_header_h = const["header_height"]
+    # Calculate available space for graphs first
+    # Each section needs: header + header_to_badge_gap + badges + badge_to_graph_gap + graph
+    # Plus section_gap between sections
+    section_overhead = (
+        const["header_height"]
+        + const["header_to_badge_gap"]
+        + const["badges_height"]
+        + const["badge_to_graph_gap"]
+    )
+    total_overhead = (
+        utility_h
+        + section_overhead  # training section overhead
+        + const["section_gap"]  # gap between sections
+        + section_overhead  # run section overhead
+        + 20  # bottom margin
+    )
+    available_for_graphs = window_h - total_overhead
+    graph_h = max(120, available_for_graphs // 2)  # Equal height, minimum 120
     
+    # Now calculate Y positions based on fixed graph height
+    training_header_y = max(0, utility_y + utility_h)
+    training_header_h = const["header_height"]
+    training_badges_y = training_header_y + training_header_h + const["header_to_badge_gap"]
+    training_badges_h = const["badges_height"]
+    training_graph_y = training_badges_y + training_badges_h + const["badge_to_graph_gap"] + _GRAPH_Y_OFFSET
+    
+    run_header_y = max(0, training_graph_y + graph_h + const["section_gap"])
+    run_header_h = const["header_height"]
     run_badges_y = run_header_y + run_header_h + const["header_to_badge_gap"]
     run_badges_h = const["badges_height"]
+    run_graph_y = run_badges_y + run_badges_h + const["badge_to_graph_gap"] + _GRAPH_Y_OFFSET
     
-    run_graph_y = run_badges_y + run_badges_h + const["badge_to_graph_gap"]
-    
-    # Calculate actual graph heights
-    training_graph_h = max(150, run_header_y - training_graph_y - 10)
-    run_graph_h = max(150, window_h - run_graph_y - 20)
+    # Use equal heights for both graphs
+    training_graph_h = graph_h
+    run_graph_h = graph_h
     
     training_graph_rect = pygame.Rect(inner_x, training_graph_y, inner_width, training_graph_h)
     run_graph_rect = pygame.Rect(inner_x, run_graph_y, inner_width, run_graph_h)

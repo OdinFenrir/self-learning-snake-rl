@@ -97,6 +97,10 @@ def draw(app) -> None:
         run_graph_badges=app._build_run_graph_badges(),
         run_status_lines=app.actions.build_status_lines() + app._build_dynamic_status_lines(),
         settings_lines=app._build_settings_lines(),
+        training_header_y=app.training_header_y,
+        training_badges_y=app.training_badges_y,
+        run_header_y=app.run_header_y,
+        run_badges_y=app.run_badges_y,
     )
     try:
         app.panel_renderer.draw(
@@ -181,37 +185,52 @@ def safe_render_text(app, text: str, color: tuple[int, int, int], *, small: bool
         font = app.small_font if small else app.font
         return font.render(str(text), True, color)
     except Exception:
-        font = pygame.font.SysFont("Arial", 16 if small else 20, bold=True)
-        return font.render(str(text), True, color)
+        try:
+            font = pygame.font.SysFont("Arial", 16 if small else 20, bold=True)
+            return font.render(str(text), True, color)
+        except Exception:
+            # Last resort: create a surface with a colored rectangle
+            surf = pygame.Surface((max(10, len(str(text)) * 8), 20 if small else 24))
+            surf.fill(color)
+            return surf
 
 
 def draw_options_window(app) -> None:
+    # Semi-transparent dark background overlay
     overlay = pygame.Surface((app.layout.window.width, app.layout.window.height), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 132))
     app.surface.blit(overlay, (0, 0))
 
-    pad = 14
+    # Create a centered, reasonably-sized options window
+    window_width = app.layout.window.width
+    window_height = app.layout.window.height
+    
+    # Options window dimensions (percentage of window, but with reasonable limits)
+    panel_width = min(int(window_width * 0.8), 900)  # 80% of width, max 900px
+    panel_height = min(int(window_height * 0.8), 1000)  # 80% of height, max 1000px
+    
+    # Center the panel
+    panel_x = (window_width - panel_width) // 2
+    panel_y = (window_height - panel_height) // 2
+    panel = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+
+    # Draw the panel background and border
+    pygame.draw.rect(app.surface, app.theme.graph_bg, panel, border_radius=12)
+    pygame.draw.rect(app.surface, app.theme.board_frame_border, panel, width=2, border_radius=12)
+
+    pad = 20  # Inner padding for the panel content
     row_h = max(32, int(app.design_tokens.components.button_row_height))
     gap = max(8, int(app.design_tokens.spacing.section_gap))
-    shortcuts_row_h = 28
-    shortcuts_h = 38 + (len(app._SHORTCUTS) * shortcuts_row_h)
-    controls_rows = 15
-    controls_h = (controls_rows * row_h) + ((controls_rows - 1) * gap)
-    needed_height = 50 + controls_h + 6 + shortcuts_h + gap + row_h + 18
-    max_h = max(360, int(app.layout.window.height * 0.92))
-    height = min(max_h, max(420, needed_height))
-    width = max(420, int(app.layout.window.width * 0.48))
-    width = min(width, int(app.layout.window.width - 24))
-    x = int((app.layout.window.width - width) // 2)
-    y = int((app.layout.window.height - height) // 2)
-    panel = pygame.Rect(x, y, width, height)
-    pygame.draw.rect(app.surface, app.theme.panel_bg, panel, border_radius=12)
-    pygame.draw.rect(app.surface, app.theme.panel_border, panel, width=2, border_radius=12)
-    head = safe_render_text(app, "Options", app.theme.section_header, small=False)
-    app.surface.blit(head, (panel.x + 16, panel.y + 12))
+    shortcuts_row_h = 28  # Height of each shortcut row
 
+    # Header
+    head = safe_render_text(app, "Options", app.theme.section_header, small=False)
+    app.surface.blit(head, (panel.x + pad, panel.y + pad))
+
+    # Button dimensions
     btn_w = panel.width - (pad * 2)
-    row_y = panel.y + 50
+    row_y = panel.y + pad * 2 + head.get_height()  # Start below header with padding
+    
     sections = [
         ("Training", [app.btn_adaptive_toggle, app.btn_space_strategy_toggle, app.btn_tail_trend_toggle]),
         ("Visual", [app.btn_theme_cycle, app.btn_board_bg_cycle, app.btn_snake_style_cycle, app.btn_fog_cycle]),
@@ -221,12 +240,18 @@ def draw_options_window(app) -> None:
     ]
     for title, buttons in sections:
         title_surf = safe_render_text(app, title, app.theme.section_header, small=True)
-        app.surface.blit(title_surf, (panel.x + pad, row_y))
-        row_y += int(row_h * 0.72)
+        # Center title horizontally within panel
+        title_x = panel.x + (panel.width - title_surf.get_width()) // 2
+        app.surface.blit(title_surf, (title_x, row_y))
+        row_y += int(row_h * 0.8)  # Tighter spacing after title
         for btn in buttons:
-            btn.rect = pygame.Rect(panel.x + pad, row_y, btn_w, row_h)
+            # Center buttons horizontally within panel
+            btn_x = panel.x + (panel.width - btn_w) // 2
+            btn.rect = pygame.Rect(btn_x, row_y, btn_w, row_h)
             btn.draw(app.surface, app.small_font, pygame.mouse.get_pos())
             row_y += row_h + gap
+    
+    # Shortcuts section
     shortcuts_start_y = int(row_y + 6)
     draw_shortcuts_list(app, panel=panel, start_y=shortcuts_start_y, pad=pad)
     shortcuts_end_y = int(shortcuts_start_y + 30 + (len(app._SHORTCUTS) * shortcuts_row_h))

@@ -1,3 +1,7 @@
+"""
+UI rendering components for the side panels in Snake Frame application.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +17,23 @@ from .ui import Button, NumericInput
 
 @dataclass(frozen=True)
 class PanelRenderData:
+    """
+    Data required for rendering the side panels.
+    
+    Attributes:
+        training_episode_scores: List of scores from training episodes
+        run_episode_scores: List of scores from run episodes
+        training_graph_rect: Rectangle for training graph rendering
+        run_graph_rect: Rectangle for run graph rendering
+        training_graph_badges: List of badge strings for training section
+        run_graph_badges: List of badge strings for run section
+        run_status_lines: List of status lines to display
+        settings_lines: List of settings lines to display
+        training_header_y: Y position for training header
+        training_badges_y: Y position for training badges
+        run_header_y: Y position for run header
+        run_badges_y: Y position for run badges
+    """
     training_episode_scores: list[int]
     run_episode_scores: list[int]
     training_graph_rect: pygame.Rect
@@ -21,10 +42,47 @@ class PanelRenderData:
     run_graph_badges: list[str]
     run_status_lines: list[str]
     settings_lines: list[str]
+    # Explicit right panel layout positions
+    training_header_y: int
+    training_badges_y: int
+    run_header_y: int
+    run_badges_y: int
 
 
 @dataclass(frozen=True)
 class PanelControls:
+    """
+    Collection of UI controls for the side panels.
+    
+    Attributes:
+        generations_input: Input for number of training generations
+        btn_train_start: Button to start training
+        btn_train_stop: Button to stop training
+        btn_save: Button to save model/state
+        btn_load: Button to load model/state
+        btn_delete: Button to delete model/state
+        btn_game_start: Button to start a game/run
+        btn_game_stop: Button to stop a game/run
+        btn_restart: Button to restart current game
+        btn_options: Button to open options panel
+        btn_options_close: Button to close options panel
+        btn_adaptive_toggle: Toggle for adaptive reward
+        btn_space_strategy_toggle: Toggle for space strategy
+        btn_tail_trend_toggle: Toggle for tail trend features
+        btn_theme_cycle: Button to cycle through themes
+        btn_board_bg_cycle: Button to cycle board background modes
+        btn_snake_style_cycle: Button to cycle snake styles
+        btn_fog_cycle: Button to cycle fog density
+        btn_speed_down: Button to decrease live speed
+        btn_speed_up: Button to increase live speed
+        btn_eval_suite: Button to run evaluation suite
+        btn_eval_mode_ppo: Button to set evaluation to PPO only
+        btn_eval_mode_controller: Button to set evaluation to controller on
+        btn_eval_holdout: Button to run holdout evaluation
+        btn_debug_toggle: Toggle for debug overlay
+        btn_reachable_toggle: Toggle for reachable overlay
+        btn_diagnostics: Button to generate diagnostics bundle
+    """
     generations_input: NumericInput
     btn_train_start: Button
     btn_train_stop: Button
@@ -55,12 +113,26 @@ class PanelControls:
 
 
 class SidePanelsRenderer:
+    """
+    Renders the side panels (left and right) for the Snake Frame application.
+    
+    Handles layout and rendering of UI components including graphs, controls,
+    and status information in the side panels of the main application window.
+    """
     def __init__(
         self,
         settings: Settings,
         font: pygame.font.Font,
         small_font: pygame.font.Font,
     ) -> None:
+        """
+        Initialize the side panels renderer.
+        
+        Args:
+            settings: Application settings object
+            font: Font for primary text rendering
+            small_font: Font for secondary/small text rendering
+        """
         self.settings = settings
         self.theme: ThemePalette = get_theme(getattr(settings, "theme_name", ""))
         compact = int(settings.window_height_px or settings.window_px) < int(get_design_tokens(settings.theme_name).spacing.graph_margin_compact_threshold)
@@ -72,6 +144,12 @@ class SidePanelsRenderer:
         self._text_cache: OrderedDict[tuple[str, tuple[int, int, int], bool], pygame.Surface] = OrderedDict()
 
     def clear_caches(self) -> None:
+        """
+        Clear all cached surfaces to free memory.
+        
+        This should be called when settings change or when the renderer
+        needs to refresh all cached text and background surfaces.
+        """
         self._static_bg_cache = None
         self._text_cache.clear()
         self.graph.clear_cache()
@@ -82,33 +160,34 @@ class SidePanelsRenderer:
         data: PanelRenderData,
         controls: PanelControls,
     ) -> None:
+        """
+        Render the side panels onto the given surface.
+        
+        Args:
+            surface: pygame surface to draw on
+            data: PanelRenderData containing information to display
+            controls: PanelControls containing interactive UI elements
+        """
         left_w = int(self.settings.left_panel_px)
         board_w = int(self.settings.window_px)
         right_w = int(self.settings.right_panel_px)
         panel_h = int(self.settings.window_height_px or self.settings.window_px)
         surface.blit(self._static_background(left_w, board_w, right_w, panel_h), (0, 0))
 
-        self._draw_right_options(surface, controls)
-        
-        # Use fixed layout positions based on graph rects
         right_inner_width = int(self.settings.right_panel_px - 36)
         right_x = int(data.training_graph_rect.x)
         
-        # Training KPIs section - use fixed position above training graph
-        training_header_y = data.training_graph_rect.y - 80  # Fixed offset from graph top
-        self._draw_section_header(surface, "Training KPIs", right_x, training_header_y)
+        # Training KPIs section - use explicit layout positions
+        self._draw_section_header(surface, "Training KPIs", right_x, data.training_header_y)
         
-        # Draw badges in fixed area
-        training_badges_y = training_header_y + 30
         _ = self._draw_graph_badges(
             surface,
             start_x=right_x,
-            start_y=training_badges_y,
+            start_y=data.training_badges_y,
             max_width=right_inner_width,
             badges=data.training_graph_badges,
         )
         
-        # Draw training graph
         train_graph_rect = pygame.Rect(data.training_graph_rect)
         pygame.draw.rect(surface, self.theme.graph_bg, train_graph_rect)
         self.graph.draw(
@@ -118,16 +197,13 @@ class SidePanelsRenderer:
             empty_message="Train PPO to build graph.",
         )
 
-        # Run KPIs section - use fixed position above run graph  
-        run_header_y = data.run_graph_rect.y - 80  # Fixed offset from graph top
-        self._draw_section_header(surface, "Run KPIs", right_x, run_header_y)
+        # Run KPIs section - use explicit layout positions
+        self._draw_section_header(surface, "Run KPIs", right_x, data.run_header_y)
         
-        # Draw badges in fixed area
-        run_badges_y = run_header_y + 30
         _ = self._draw_graph_badges(
             surface,
             start_x=right_x,
-            start_y=run_badges_y,
+            start_y=data.run_badges_y,
             max_width=right_inner_width,
             badges=data.run_graph_badges,
         )
@@ -142,9 +218,10 @@ class SidePanelsRenderer:
             empty_message="Play/Watch runs to build graph.",
         )
         
+        # Align left panel header with training header for consistent positioning
         self._draw_left_panel_sections(
             surface,
-            controls.generations_input.rect.y - 28,
+            data.training_header_y,
             controls,
             data.run_status_lines,
             data.settings_lines,
@@ -158,6 +235,16 @@ class SidePanelsRenderer:
         run_status_lines: list[str],
         settings_lines: list[str],
     ) -> None:
+        """
+        Draw the left panel sections including controls, status, and settings.
+        
+        Args:
+            surface: pygame surface to draw on
+            top: Y coordinate to start drawing from
+            controls: PanelControls containing interactive UI elements
+            run_status_lines: List of status lines to display
+            settings_lines: List of settings lines to display
+        """
         mouse_pos = pygame.mouse.get_pos()
         panel_bottom = int(self.settings.window_height_px or self.settings.window_px) - int(self.tokens.spacing.section_gap)
         self._draw_section_header(surface, "Train Controls", 18, top)
@@ -173,7 +260,7 @@ class SidePanelsRenderer:
         controls.btn_restart.draw(surface, self.small_font, mouse_pos)
         controls.btn_options.draw(surface, self.small_font, mouse_pos)
 
-        y = controls.btn_options.rect.bottom + int(self.tokens.spacing.section_gap)
+        y = controls.btn_options.rect.bottom + int(self.tokens.spacing.section_gap * 1.5)
         line_h = self._line_height()
         if y + line_h >= panel_bottom:
             return
@@ -224,6 +311,22 @@ class SidePanelsRenderer:
         max_width: int,
         badges: list[str],
     ) -> int:
+        """
+        Draw a series of badges (small labeled rectangles) in rows.
+        
+        Badges are wrapped to fit within max_width and arranged in rows
+        up to the maximum allowed rows.
+        
+        Args:
+            surface: pygame surface to draw on
+            start_x: X position to start drawing badges
+            start_y: Y position to start drawing badges
+            max_width: Maximum width available for badges
+            badges: List of strings to display as badges
+            
+        Returns:
+            Y position after the last drawn badge (for positioning subsequent elements)
+        """
         if not badges:
             return int(start_y)
         rendered = [self._text(str(text), self.theme.badge_text, small=True) for text in badges]
@@ -258,8 +361,7 @@ class SidePanelsRenderer:
             y += int(badge_h + int(self.tokens.spacing.badge_gap_y))
         return int(y)
 
-    def _draw_right_options(self, surface: pygame.Surface, controls: PanelControls) -> None:
-        _ = (surface, controls)
+
 
     def _draw_section_header(self, surface: pygame.Surface, text: str, x: int, y: int) -> None:
         surface.blit(self._text(text, self.theme.section_header, small=False), (int(x), int(y - 2)))
@@ -308,7 +410,11 @@ class SidePanelsRenderer:
         return static
 
     def _text(self, text: str, color: tuple[int, int, int], *, small: bool) -> pygame.Surface:
-        key = (str(text), tuple(color), bool(small))
+        # Explicitly type the key components to satisfy type checker
+        text_str: str = str(text)
+        color_tuple: tuple[int, int, int] = (color[0], color[1], color[2])
+        small_bool: bool = bool(small)
+        key: tuple[str, tuple[int, int, int], bool] = (text_str, color_tuple, small_bool)
         cached = self._text_cache.get(key)
         if cached is not None:
             self._text_cache.move_to_end(key)

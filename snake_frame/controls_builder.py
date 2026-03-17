@@ -16,6 +16,10 @@ class ControlsBuildResult:
     graph_rect: pygame.Rect
     training_graph_rect: pygame.Rect
     run_graph_rect: pygame.Rect
+    training_header_y: int
+    training_badges_y: int
+    run_header_y: int
+    run_badges_y: int
     panel_controls: PanelControls
     generations_input: NumericInput
     btn_train_start: Button
@@ -71,7 +75,7 @@ def build_controls(
         + input_height  # input height
         + input_to_buttons_gap  # input->first row spacing
         + (11 * int(button_row_height))  # train/save/delete/game/restart/options/adaptive/space/theme/board-bg/snake rows
-        + (10 * int(button_gap))  # gaps between rows
+        + (15 * int(button_gap))  # gaps between rows (increased for more spacing)
         + int(tokens.spacing.status_top_gap)  # game buttons->status spacing
     )
     reserve_for_controls_and_status = int(controls_stack_height + (int(status_line_count) * int(status_line_height)))
@@ -108,28 +112,6 @@ def build_controls(
     training_graph_rect = right_layout.training_graph_rect
     run_graph_rect = right_layout.run_graph_rect
     graph_rect = pygame.Rect(run_graph_rect)
-    right_options_y = right_layout.utility_row_y
-    right_options_gap = int(tokens.spacing.right_options_gap)
-    right_options_height = right_layout.utility_row_height
-    right_options_width = int((right_inner_w - right_options_gap) // 2)
-    btn_debug_toggle = Button(
-        "Debug: OFF",
-        pygame.Rect(right_inner_x, right_options_y, right_options_width, right_options_height),
-        bg=theme.debug_off_bg,
-        bg_hover=theme.debug_off_hover,
-    )
-    btn_reachable_toggle = Button(
-        "Reach: OFF",
-        pygame.Rect(
-            right_inner_x + right_options_width + right_options_gap,
-            right_options_y,
-            right_options_width,
-            right_options_height,
-        ),
-        bg=theme.reach_off_bg,
-        bg_hover=theme.reach_off_hover,
-    )
-
     generations_input = NumericInput(
         pygame.Rect(controls_layout.x, controls_top + input_top_offset, controls_layout.width, input_height),
         "500000",
@@ -317,6 +299,19 @@ def build_controls(
         bg=theme.toggle_info_bg,
         bg_hover=theme.toggle_info_hover,
     )
+    # Debug toggles - positioned for Options modal only (not in right panel)
+    btn_debug_toggle = Button(
+        "Debug: OFF",
+        pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+        bg=theme.debug_off_bg,
+        bg_hover=theme.debug_off_hover,
+    )
+    btn_reachable_toggle = Button(
+        "Reach: OFF",
+        pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+        bg=theme.reach_off_bg,
+        bg_hover=theme.reach_off_hover,
+    )
 
     panel_controls = PanelControls(
         generations_input=generations_input,
@@ -351,7 +346,13 @@ def build_controls(
         graph_rect=graph_rect,
         training_graph_rect=training_graph_rect,
         run_graph_rect=run_graph_rect,
+        training_header_y=right_layout.training_header_y,
+        training_badges_y=right_layout.training_badges_y,
+        run_header_y=right_layout.run_header_y,
+        run_badges_y=right_layout.run_badges_y,
         panel_controls=panel_controls,
+        btn_debug_toggle=btn_debug_toggle,
+        btn_reachable_toggle=btn_reachable_toggle,
         generations_input=generations_input,
         btn_train_start=btn_train_start,
         btn_train_stop=btn_train_stop,
@@ -376,7 +377,5 @@ def build_controls(
         btn_eval_mode_ppo=btn_eval_mode_ppo,
         btn_eval_mode_controller=btn_eval_mode_controller,
         btn_eval_holdout=btn_eval_holdout,
-        btn_debug_toggle=btn_debug_toggle,
-        btn_reachable_toggle=btn_reachable_toggle,
         btn_diagnostics=btn_diagnostics,
     )

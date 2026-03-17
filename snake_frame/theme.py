@@ -90,8 +90,8 @@ class TypographyTokens:
 
 @dataclass(frozen=True)
 class SpacingTokens:
-    input_top_offset: int = 28
-    input_to_buttons_gap: int = 14
+    input_top_offset: int = 1
+    input_to_buttons_gap: int = 8
     section_gap: int = 10
     section_gap_large: int = 24
     right_options_y: int = 12
@@ -360,7 +360,11 @@ def normalize_theme_name(name: str | None) -> str:
 
 
 def get_theme(name: str | None) -> ThemePalette:
-    return _THEMES[normalize_theme_name(name)]
+    theme_name = normalize_theme_name(name)
+    if theme_name not in _THEMES:
+        # Fallback to default theme if requested theme is not found
+        theme_name = "retro_forest_noir"
+    return _THEMES[theme_name]
 
 
 def get_design_tokens(name: str | None = None, *, compact: bool = False) -> DesignTokens:
@@ -368,15 +372,15 @@ def get_design_tokens(name: str | None = None, *, compact: bool = False) -> Desi
     if not compact:
         return _DEFAULT_TOKENS
     spacing = SpacingTokens(
-        section_gap=max(6, int((_DEFAULT_TOKENS.spacing.section_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
-        section_gap_large=max(12, int((_DEFAULT_TOKENS.spacing.section_gap_large * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
-        input_top_offset=max(16, int((_DEFAULT_TOKENS.spacing.input_top_offset * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
-        input_to_buttons_gap=max(8, int((_DEFAULT_TOKENS.spacing.input_to_buttons_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        section_gap=max(0, int((_DEFAULT_TOKENS.spacing.section_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        section_gap_large=max(0, int((_DEFAULT_TOKENS.spacing.section_gap_large * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        input_top_offset=max(0, int((_DEFAULT_TOKENS.spacing.input_top_offset * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        input_to_buttons_gap=max(0, int((_DEFAULT_TOKENS.spacing.input_to_buttons_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
         right_options_y=_DEFAULT_TOKENS.spacing.right_options_y,
         right_options_gap=_DEFAULT_TOKENS.spacing.right_options_gap,
-        right_header_block_gap=max(4, int((_DEFAULT_TOKENS.spacing.right_header_block_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
-        badge_gap_x=max(5, int((_DEFAULT_TOKENS.spacing.badge_gap_x * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
-        badge_gap_y=max(3, int((_DEFAULT_TOKENS.spacing.badge_gap_y * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        right_header_block_gap=max(0, int((_DEFAULT_TOKENS.spacing.right_header_block_gap * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        badge_gap_x=max(0, int((_DEFAULT_TOKENS.spacing.badge_gap_x * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
+        badge_gap_y=max(0, int((_DEFAULT_TOKENS.spacing.badge_gap_y * _DEFAULT_TOKENS.spacing.compact_gap_scale_num) / _DEFAULT_TOKENS.spacing.compact_gap_scale_den)),
         left_controls_top_padding=_DEFAULT_TOKENS.spacing.left_controls_top_padding,
         left_controls_raise_px=_DEFAULT_TOKENS.spacing.left_controls_raise_px,
         status_top_gap=_DEFAULT_TOKENS.spacing.status_top_gap,

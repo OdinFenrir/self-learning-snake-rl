@@ -64,6 +64,14 @@ class UIStateModel:
     game_running: bool
 
     def is_action_enabled(self, action: str) -> bool:
+        # Define valid actions
+        valid_actions = {"train_start", "train_stop", "save", "load", "delete"}
+        
+        # Return False for invalid actions
+        if action not in valid_actions:
+            return False
+            
+        # Handle valid actions
         if self.training_state in (TrainingState.RUNNING, TrainingState.STOPPING):
             if action in ("save", "load", "delete", "train_start"):
                 return False
