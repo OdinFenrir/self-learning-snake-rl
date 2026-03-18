@@ -226,7 +226,9 @@ def draw_options_window(app) -> None:
 
     # Header
     head = safe_render_text(app, "Options", app.theme.section_header, small=False)  # Use regular font for header
-    app.surface.blit(head, (panel.x + pad, panel.y + pad))
+    # Center header horizontally within panel
+    head_x = panel.x + (panel.width - head.get_width()) // 2
+    app.surface.blit(head, (head_x, panel.y + pad))
 
     # Button dimensions
     btn_w = panel.width - (pad * 2)
@@ -244,7 +246,7 @@ def draw_options_window(app) -> None:
         # Center title horizontally within panel
         title_x = panel.x + (panel.width - title_surf.get_width()) // 2
         app.surface.blit(title_surf, (title_x, row_y))
-        row_y += 24  # Increased space after title to push buttons down further
+        row_y += 34  # Increased space after title to push buttons down further
         for btn in buttons:
             # Center buttons horizontally within panel
             btn_x = panel.x + (panel.width - btn_w) // 2
@@ -267,8 +269,10 @@ def draw_options_window(app) -> None:
 
 def draw_shortcuts_list(app, *, panel: pygame.Rect, start_y: int, pad: int) -> None:
     title = safe_render_text(app, "Shortcuts", app.theme.section_header, small=True)  # Smaller font for title
-    app.surface.blit(title, (panel.x + pad, int(start_y)))
-    y = int(start_y + 20)  # Reduced starting offset
+    # Center title horizontally within panel
+    title_x = panel.x + (panel.width - title.get_width()) // 2
+    app.surface.blit(title, (title_x, int(start_y)))
+    y = int(start_y + 34)  # Increased space after title to push buttons down to 34 pixels as requested
     key_w = max(80, int(panel.width * 0.2))  # Further reduced key width
     max_desc_w = max(50, int(panel.width - (pad * 2) - key_w - 6))  # Further reduced description width
     for key, desc in app._SHORTCUTS:
