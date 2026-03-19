@@ -79,4 +79,6 @@ class UIStateModel:
             return self.training_state in (TrainingState.RUNNING, TrainingState.STOPPING)
         if action == "train_start":
             return self.training_state not in (TrainingState.RUNNING, TrainingState.STOPPING)
+        if action == "save":
+            return self.model_state in (ModelState.READY, ModelState.UNAVAILABLE, ModelState.SYNCING)
         return True

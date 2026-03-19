@@ -180,6 +180,14 @@ For trustworthy comparisons, cite:
   - `Model Checks`: Run Full Evaluation, Run Holdout Check, Eval mode toggle (PPO vs Controller)
   - `Debug & Tools`: Debug Overlay, Reachability Overlay, Export Diagnostics
 
+### Model Safety Workflow
+
+- `Save`: prompts for experiment name and saves into `state/ppo/<experiment_name>/`
+- `Load`/`Delete`: open a folder picker under `state/ppo/` to target an explicit experiment
+- `Save` is blocked when no model is loaded/trained
+- The active experiment is persisted in UI preferences and restored on startup
+- This prevents accidental overwrite of a different experiment's `last_model.zip`
+
 ## Persistence
 
 Saved artifacts (default baseline path shown):

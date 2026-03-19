@@ -4,6 +4,14 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Callable
+import re
+try:
+    import tkinter as tk
+    from tkinter import filedialog, simpledialog
+except Exception:  # pragma: no cover - platform-dependent optional UI dependency
+    tk = None
+    filedialog = None
+    simpledialog = None
 
 from .protocols import AgentLike, GameLike, NumericInputLike, TrainingLike
 from .app_state import AppState, empty_death_counts
@@ -46,6 +54,8 @@ class AppActions:
         ui_state_provider: Callable[[], UIStateModel] | None = None,
         get_theme_name: Callable[[], str] | None = None,
         set_theme_name: Callable[[str], None] | None = None,
+        get_experiment_name: Callable[[], str] | None = None,
+        switch_experiment: Callable[[str], bool] | None = None,
     ) -> None:
         self.app_state = app_state
         self.game = game
@@ -56,6 +66,8 @@ class AppActions:
         self.ui_state_provider = ui_state_provider
         self.get_theme_name = get_theme_name
         self.set_theme_name = set_theme_name
+        self.get_experiment_name = get_experiment_name
+        self.switch_experiment = switch_experiment
         has_model = bool(getattr(self.agent, "is_ready", False))
         self.app_state.model_dirty = False
         self.app_state.model_save_state = "saved" if has_model else "no_model"
@@ -198,8 +210,23 @@ class AppActions:
         self.set_status(f"Diagnostics bundle created: {bundle_path.name}{suffix}", severity="warn" if warning_count > 0 else "info")
 
     def handle_save_clicked(self) -> None:
+        if callable(self.switch_experiment):
+            selected = self._choose_experiment_for_save()
+            if selected is None:
+                self.set_status("Save canceled", severity="warn")
+                return
+            if not self._switch_experiment_if_needed(selected):
+                return
         if not self.can_mutate_storage("save"):
             return
+        if self.ui_state_provider is not None:
+            ui_state = self.ui_state_provider()
+            model_state = str(getattr(ui_state.model_state, "value", ui_state.model_state))
+            if model_state in ("none", "loading"):
+                self.app_state.model_save_state = "no_model"
+                self.app_state.model_dirty = False
+                self.set_status("No trained/loaded model to save", severity="warn")
+                return
         snap = self.training.snapshot()
         scores = (
             [int(v) for v in self.app_state.training_episode_scores]
@@ -276,6 +303,13 @@ class AppActions:
         self.set_status(status, severity="info" if model_saved else "warn")
 
     def handle_load_clicked(self) -> None:
+        if callable(self.switch_experiment):
+            selected = self._choose_existing_experiment(title="Select experiment folder to load")
+            if selected is None:
+                self.set_status("Load canceled", severity="warn")
+                return
+            if not self._switch_experiment_if_needed(selected):
+                return
         if not self.can_mutate_storage("load"):
             return
         try:
@@ -442,6 +476,13 @@ class AppActions:
         self.set_status("Loaded latest checkpoint")
 
     def handle_delete_clicked(self) -> None:
+        if callable(self.switch_experiment):
+            selected = self._choose_existing_experiment(title="Select experiment folder to delete")
+            if selected is None:
+                self.set_status("Delete canceled", severity="warn")
+                return
+            if not self._switch_experiment_if_needed(selected):
+                return
         if not self.can_mutate_storage("delete"):
             return
         delete_result = None
@@ -622,3 +663,108 @@ class AppActions:
         if maximum is None:
             return lower_bounded
         return min(int(maximum), lower_bounded)
+
+    def _state_root(self) -> Path:
+        return Path(self.state_file).parent / "ppo"
+
+    @staticmethod
+    def _sanitize_experiment_name(name: str) -> str:
+        raw = str(name or "").strip()
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)
+        cleaned = cleaned.strip("._- ")
+        return cleaned
+
+    def _choose_experiment_for_save(self) -> str | None:
+        current = "v2"
+        if callable(self.get_experiment_name):
+            try:
+                current = str(self.get_experiment_name() or "v2")
+            except Exception:
+                current = "v2"
+        if tk is None or simpledialog is None:
+            return current
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            value = simpledialog.askstring(
+                title="Save Model",
+                prompt="Experiment name to save into:",
+                initialvalue=current,
+                parent=root,
+            )
+            root.destroy()
+        except Exception:
+            logger.exception("Experiment save dialog failed")
+            return current
+        if value is None:
+            return None
+        selected = self._sanitize_experiment_name(value)
+        if not selected:
+            self.set_status("Invalid experiment name", severity="warn")
+            return None
+        return selected
+
+    def _choose_existing_experiment(self, *, title: str) -> str | None:
+        if tk is None or filedialog is None:
+            self.set_status("Folder picker unavailable on this platform", severity="warn")
+            return None
+        try:
+            base = self._state_root()
+            base.mkdir(parents=True, exist_ok=True)
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            selected_dir = filedialog.askdirectory(
+                title=title,
+                initialdir=str(base),
+                mustexist=True,
+                parent=root,
+            )
+            root.destroy()
+        except Exception:
+            logger.exception("Experiment folder dialog failed")
+            return None
+        if not selected_dir:
+            return None
+        selected_path = Path(selected_dir)
+        try:
+            is_under_root = selected_path.parent.resolve() == base.resolve()
+        except OSError:
+            is_under_root = False
+        if not is_under_root:
+            self.set_status("Select a folder directly inside state/ppo", severity="warn")
+            return None
+        name = self._sanitize_experiment_name(selected_path.name)
+        if not name:
+            self.set_status("Invalid experiment folder", severity="warn")
+            return None
+        return name
+
+    def _switch_experiment_if_needed(self, target: str) -> bool:
+        desired = self._sanitize_experiment_name(target)
+        if not desired:
+            self.set_status("Invalid experiment target", severity="warn")
+            return False
+        current = None
+        if callable(self.get_experiment_name):
+            try:
+                current = str(self.get_experiment_name() or "").strip()
+            except Exception:
+                current = None
+        if current == desired:
+            return True
+        if not callable(self.switch_experiment):
+            self.set_status("Experiment switching is unavailable", severity="warn")
+            return False
+        ok = False
+        try:
+            ok = bool(self.switch_experiment(desired))
+        except Exception:
+            logger.exception("Experiment switch failed")
+            ok = False
+        if not ok:
+            self.set_status(f"Failed to switch experiment: {desired}", severity="warn")
+            return False
+        self.set_status(f"Experiment: {desired}")
+        return True

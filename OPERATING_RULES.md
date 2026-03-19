@@ -5,6 +5,8 @@
 - **Baseline runs**: use `v2` (the default)
 - **New experiments**: must use a distinct experiment_name (e.g., `v2_my_experiment`)
 - **Never train into v2 without preserving baseline first**
+- **Use explicit experiment targeting for model actions** (`Save` / `Load` / `Delete`)
+- **Do not assume current slot**: confirm the selected experiment before any save/delete
 
 ## Canonical Baseline
 

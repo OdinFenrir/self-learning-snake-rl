@@ -118,6 +118,8 @@ class SnakeFrameApp:
             ui_state_provider=self._derive_ui_state,
             get_theme_name=lambda: self.theme.name,
             set_theme_name=lambda name: self._apply_theme(name, announce=False),
+            get_experiment_name=lambda: self.experiment_name,
+            switch_experiment=self._switch_experiment,
         )
         self._bind_button_actions()
         self._run_session_log_path = Path(__file__).resolve().parents[1] / "artifacts" / "live_eval" / "run_session_log.jsonl"
@@ -636,6 +638,35 @@ class SnakeFrameApp:
         self.actions.on_restart_clicked()
         self.gameplay.reset_episode_tracking()
 
+    def _switch_experiment(self, experiment_name: str) -> bool:
+        name = str(experiment_name or "").strip()
+        if not name:
+            return False
+        ppo_root = Path(self.state_file).parent / "ppo"
+        target_dir = ppo_root / name
+        try:
+            ppo_root.mkdir(parents=True, exist_ok=True)
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.exception("Failed preparing experiment directory: %s", target_dir)
+            return False
+        try:
+            self.training.reset_tracking_from_agent()
+            self.agent.switch_artifact_dir(target_dir)
+            self.gameplay.set_artifact_dir(target_dir)
+            self.experiment_name = name
+            self.app_state.model_dirty = False
+            self.app_state.model_save_state = "saved" if bool(getattr(self.agent, "is_ready", False)) else "no_model"
+            self.app_state.last_model_save_ok_at = 0.0
+            self._last_logged_run_episodes = int(len(getattr(self.game, "episode_scores", [])))
+            self._runlog_prev_decisions = 0
+            self._runlog_prev_interventions = 0
+            self._runlog_prev_stuck_episodes = 0
+            return True
+        except Exception:
+            logger.exception("Failed switching experiment runtime to %s", name)
+            return False
+
     def run(self) -> None:
         app_orchestrator.run_loop(self)
 
@@ -695,6 +726,11 @@ class SnakeFrameApp:
         payload = result.payload or {}
         if result.invalid or not payload:
             return False
+
+        active_experiment = str(payload.get("activeExperiment", self.experiment_name or "v2")).strip()
+        if active_experiment and active_experiment != self.experiment_name:
+            if not self._switch_experiment(active_experiment):
+                logger.warning("Failed to restore active experiment from preferences: %s", active_experiment)
 
         if "themeName" in payload:
             self._apply_theme(normalize_theme_name(str(payload.get("themeName"))), announce=False)
@@ -764,6 +800,7 @@ class SnakeFrameApp:
             height = int(self.layout.window.height)
         payload = {
             "uiPrefsVersion": 1,
+            "activeExperiment": str(self.experiment_name),
             "themeName": self.theme.name,
             "windowBorderless": bool(self.settings.window_borderless),
             "windowWidth": width,

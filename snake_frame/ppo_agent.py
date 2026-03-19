@@ -429,6 +429,26 @@ class PpoSnakeAgent:
             return self.artifact_dir.parent.parent / "ppo_snake_model.zip"
         return self.artifact_dir.parent / "ppo_snake_model.zip"
 
+    def switch_artifact_dir(self, artifact_dir: Path) -> None:
+        new_dir = Path(artifact_dir)
+        with self._model_lock:
+            self.artifact_dir = new_dir
+            self.legacy_model_path = self._default_legacy_model_path()
+            self.model = None
+            self.inference_model = None
+            self._sync_request_event.clear()
+            self._last_inference_sync_steps = -1
+            self._last_inference_sync_time = 0.0
+            self._obs_norm_mean = None
+            self._obs_norm_var = None
+            self._resume_vecnormalize_source = None
+            self._train_vecnormalize = None
+            self._best_eval_score = None
+            self._best_eval_step = 0
+            self._last_eval_score = None
+            self._eval_runs_completed = 0
+        self._load_eval_metadata()
+
     def _policy_kwargs(self) -> dict:
         pi_arch = getattr(self.config, "policy_net_arch_pi", None)
         vf_arch = getattr(self.config, "policy_net_arch_vf", None)

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-19 - model safety and experiment targeting
+
+- Added explicit experiment-target workflow for model actions:
+  - `Save` prompts for experiment name (`state/ppo/<experiment_name>/`)
+  - `Load`/`Delete` use folder picker constrained to `state/ppo/`
+- Added runtime experiment switching so PPO artifacts and controller memory (`arbiter_model.json`, `tactic_memory.json`) follow the selected experiment.
+- Added save guard so model save is blocked when no model is loaded/trained.
+- Persisted active experiment in UI preferences and restore it on startup.
+
 ## 2026-03-19 - documentation and demo refresh
 
 - Updated `README.md` to act as a documentation hub from the main page with direct links to:

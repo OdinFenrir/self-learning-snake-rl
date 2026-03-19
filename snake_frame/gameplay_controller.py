@@ -280,6 +280,41 @@ class GameplayController:
     def set_learning_enabled(self, enabled: bool) -> None:
         self._learning_enabled = bool(enabled)
 
+    def set_artifact_dir(self, artifact_dir: Path | None) -> None:
+        self._persist_learning_state()
+        self._persist_learning = artifact_dir is not None
+        self._artifact_dir = Path(artifact_dir) if artifact_dir is not None else (Path(__file__).resolve().parents[1] / "state" / "ppo" / "v2")
+        self._arbiter_path = self._artifact_dir / "arbiter_model.json"
+        self._tactic_memory_path = self._artifact_dir / "tactic_memory.json"
+        self._arbiter_dirty = False
+        self._tactic_dirty = False
+        if bool(self._persist_learning):
+            self._arbiter_model = LearnedArbiterModel.load(self._arbiter_path, fallback_dim=self._arbiter_feature_dim)
+            self._tactic_memory = TacticMemoryBank.load(self._tactic_memory_path, fallback_dim=self._arbiter_feature_dim)
+        else:
+            self._arbiter_model = LearnedArbiterModel(dim=self._arbiter_feature_dim)
+            self._tactic_memory = TacticMemoryBank(
+                dim=self._arbiter_feature_dim,
+                max_clusters=self._dynamic_cfg.tactic_memory_max_clusters,
+                merge_radius=self._dynamic_cfg.tactic_memory_merge_radius,
+                memory_weight=self._dynamic_cfg.tactic_memory_weight,
+                adaptive_merge=self._dynamic_cfg.tactic_memory_adaptive_merge,
+                crowded_radius=self._dynamic_cfg.tactic_memory_merge_radius_crowded,
+                open_radius=self._dynamic_cfg.tactic_memory_merge_radius_open,
+                low_threshold=self._dynamic_cfg.tactic_memory_merge_ratio_low,
+                high_threshold=self._dynamic_cfg.tactic_memory_merge_ratio_high,
+            )
+        self._arbiter_model.learning_rate = float(getattr(self._dynamic_cfg, "arbiter_learning_rate", self._arbiter_model.learning_rate))
+        self._arbiter_model.l2 = float(getattr(self._dynamic_cfg, "arbiter_l2", self._arbiter_model.l2))
+        self._tactic_memory.max_clusters = int(getattr(self._dynamic_cfg, "tactic_memory_max_clusters", self._tactic_memory.max_clusters))
+        self._tactic_memory.merge_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius", self._tactic_memory.merge_radius))
+        self._tactic_memory.memory_weight = float(getattr(self._dynamic_cfg, "tactic_memory_weight", self._tactic_memory.memory_weight))
+        self._tactic_memory._adaptive_merge = bool(getattr(self._dynamic_cfg, "tactic_memory_adaptive_merge", self._tactic_memory._adaptive_merge))
+        self._tactic_memory._crowded_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius_crowded", self._tactic_memory._crowded_radius))
+        self._tactic_memory._open_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius_open", self._tactic_memory._open_radius))
+        self._tactic_memory._low_threshold = float(getattr(self._dynamic_cfg, "tactic_memory_merge_ratio_low", self._tactic_memory._low_threshold))
+        self._tactic_memory._high_threshold = float(getattr(self._dynamic_cfg, "tactic_memory_merge_ratio_high", self._tactic_memory._high_threshold))
+
     def set_tail_trend_enabled(self, enabled: bool) -> None:
         self._tail_trend_enabled = bool(enabled)
 
