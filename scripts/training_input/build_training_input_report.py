@@ -202,13 +202,50 @@ def _derive_checks(
             "detail": "training row found" if train_row is not None else "no training row for run_id",
         }
     )
-    checks.append(
-        {
-            "name": "eval_trace_has_run_rows",
-            "ok": bool(len(eval_rows) > 0),
-            "detail": f"eval_rows={len(eval_rows)}",
-        }
-    )
+    config = dict(metadata.get("config", {})) if isinstance(metadata.get("config"), dict) else {}
+    eval_freq_steps = safe_int(config.get("eval_freq_steps"), 0)
+    run_actual_total = safe_int((train_row or metadata).get("actual_total_timesteps"), 0)
+    run_requested = safe_int((train_row or metadata).get("requested_total_timesteps"), 0)
+    run_start_total = 0
+    run_parts = str(run_id or "").split("_")
+    if len(run_parts) >= 3:
+        run_start_total = safe_int(run_parts[1], 0)
+    run_length_steps = run_actual_total - run_start_total if run_start_total > 0 else run_requested
+    if run_length_steps < 0:
+        run_length_steps = 0
+    if len(eval_rows) > 0:
+        checks.append(
+            {
+                "name": "current_run_has_eval_rows",
+                "ok": True,
+                "status": "ok",
+                "detail": f"eval_rows={len(eval_rows)}",
+            }
+        )
+    elif eval_freq_steps > 0 and run_length_steps < eval_freq_steps:
+        checks.append(
+            {
+                "name": "current_run_has_eval_rows",
+                "ok": True,
+                "status": "skip",
+                "detail": (
+                    f"eval_rows={len(eval_rows)} expected none for short run "
+                    f"({run_length_steps} < eval_freq_steps={eval_freq_steps})"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "current_run_has_eval_rows",
+                "ok": False,
+                "status": "fail",
+                "detail": (
+                    f"eval_rows={len(eval_rows)} expected >0 "
+                    f"(run_steps={run_length_steps} eval_freq_steps={eval_freq_steps})"
+                ),
+            }
+        )
     vec_dim = safe_int(vec_latest.get("obs_dim"), -1)
     checks.append(
         {
@@ -217,7 +254,6 @@ def _derive_checks(
             "detail": f"obs_dim={vec_dim}",
         }
     )
-    config = dict(metadata.get("config", {})) if isinstance(metadata.get("config"), dict) else {}
     env_count = safe_int(config.get("env_count"), 0)
     n_steps = safe_int(config.get("n_steps"), 0)
     checks.append(
@@ -278,7 +314,11 @@ def _to_markdown(report: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Checks")
     for chk in checks:
-        icon = "OK" if bool(chk.get("ok")) else "FAIL"
+        status = str(chk.get("status", "")).strip().lower()
+        if status == "skip":
+            icon = "SKIP"
+        else:
+            icon = "OK" if bool(chk.get("ok")) else "FAIL"
         lines.append(f"- [{icon}] {chk.get('name')}: {chk.get('detail')}")
     lines.append("")
     return "\n".join(lines)

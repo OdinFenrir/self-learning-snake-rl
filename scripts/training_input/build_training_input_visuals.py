@@ -129,10 +129,26 @@ def _build_html(report: dict[str, Any], timeline: dict[str, Any]) -> str:
     amber_upper = [baseline_var * 1.30 for _ in vec_var_avg]
     red_upper = [max(max(vec_var_avg) if vec_var_avg else baseline_var, baseline_var * 1.55) for _ in vec_var_avg]
 
-    ok_count = sum(1 for c in checks if isinstance(c, dict) and bool(c.get("ok")))
-    fail_count = sum(1 for c in checks if isinstance(c, dict) and not bool(c.get("ok")))
+    ok_count = 0
+    fail_count = 0
+    skip_count = 0
+    for c in checks:
+        if not isinstance(c, dict):
+            continue
+        status = str(c.get("status", "")).strip().lower()
+        if status == "skip":
+            skip_count += 1
+        elif bool(c.get("ok")):
+            ok_count += 1
+        else:
+            fail_count += 1
     checks_pretty = [
-        {"name": str(c.get("name", "")), "ok": bool(c.get("ok", False)), "detail": str(c.get("detail", ""))}
+        {
+            "name": str(c.get("name", "")),
+            "ok": bool(c.get("ok", False)),
+            "status": str(c.get("status", "")).strip().lower(),
+            "detail": str(c.get("detail", "")),
+        }
         for c in checks
         if isinstance(c, dict)
     ]
@@ -153,6 +169,8 @@ def _build_html(report: dict[str, Any], timeline: dict[str, Any]) -> str:
         "timeline_summary": tl_summary,
         "ok_count": ok_count,
         "fail_count": fail_count,
+        "skip_count": skip_count,
+        "current_run_eval_points": len(list(report.get("eval_trace_rows", []) or [])),
         "checks": checks_pretty,
         "stability": {
             "baseline_var": baseline_var,
@@ -252,6 +270,7 @@ def _build_html(report: dict[str, Any], timeline: dict[str, Any]) -> str:
     }}
     .ok {{ color: #63d18d; }}
     .bad {{ color: #f38b8b; }}
+    .skip {{ color: #f2d36b; }}
   </style>
 </head>
 <body>
@@ -282,8 +301,9 @@ def _build_html(report: dict[str, Any], timeline: dict[str, Any]) -> str:
       ['Vec Obs Count', `${{d.obs_count.toFixed(2)}}`],
       ['Vec Mean|abs| avg', `${{d.obs_mean_abs_avg.toFixed(6)}}`],
       ['Vec Var avg', `${{d.obs_var_avg.toFixed(6)}}`],
-      ['Checks', `${{d.ok_count}} OK / ${{d.fail_count}} FAIL`],
-      ['Eval Points', `${{d.timeline_summary.eval_trace_points || 0}}`],
+      ['Checks', `${{d.ok_count}} OK / ${{d.fail_count}} FAIL / ${{d.skip_count || 0}} SKIP`],
+      ['Eval Points (history)', `${{d.timeline_summary.eval_trace_points || 0}}`],
+      ['Eval Points (current run)', `${{d.current_run_eval_points || 0}}`],
       ['Vec Checkpoints', `${{d.timeline_summary.vec_checkpoint_count || 0}}`],
       ['Stability', `${{d.stability.status}} (${{d.stability.max_drift_pct.toFixed(1)}}%)`],
       ['Perf Trend', d.verdict.performance_trend],
@@ -390,8 +410,14 @@ def _build_html(report: dict[str, Any], timeline: dict[str, Any]) -> str:
     const checks = document.getElementById('checks');
     for (const c of d.checks) {{
       const row = document.createElement('div');
-      row.className = c.ok ? 'ok' : 'bad';
-      row.textContent = `[${{c.ok ? 'OK' : 'FAIL'}}] ${{c.name}} - ${{c.detail}}`;
+      const status = (c.status || '').toLowerCase();
+      if (status === 'skip') {{
+        row.className = 'skip';
+        row.textContent = `[SKIP] ${{c.name}} - ${{c.detail}}`;
+      }} else {{
+        row.className = c.ok ? 'ok' : 'bad';
+        row.textContent = `[${{c.ok ? 'OK' : 'FAIL'}}] ${{c.name}} - ${{c.detail}}`;
+      }}
       checks.appendChild(row);
     }}
   </script>
