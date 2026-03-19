@@ -27,6 +27,7 @@ def test_promote_to_baseline_archives_existing_baseline_and_moves_source() -> No
         _write_file(baseline / "metadata.json", '{"name":"baseline"}')
         _write_file(test1 / "metadata.json", '{"name":"test1"}')
         _write_file(artifacts_root / "training_input" / "training_input_latest.json", '{"artifact_dir":"state/ppo/baseline"}')
+        _write_file(artifacts_root / "phase3_compare" / "model_agent_compare_latest.json", '{"left":"baseline","right":"test"}')
 
         result = promote_to_baseline(state_root, "Test_1")
 
@@ -46,6 +47,7 @@ def test_promote_to_baseline_archives_existing_baseline_and_moves_source() -> No
         assert len(str(manifest["summary"]["sha256_rollup"])) == 64
         assert "state/ppo/baseline/metadata.json" in names
         assert "artifacts/training_input/training_input_latest.json" in names
+        assert "artifacts/phase3_compare/model_agent_compare_latest.json" not in names
 
 
 def test_delete_model_removes_directory_tree() -> None:
@@ -80,8 +82,36 @@ def test_recover_baseline_restores_from_archive() -> None:
         assert recover.ok
         payload = json.loads((state_root / "ppo" / "baseline" / "metadata.json").read_text(encoding="utf-8"))
         assert payload["name"] == "old-baseline"
+        # Default recover is model-only and should leave artifacts untouched.
+        still_current = (artifacts_root / "training_input" / "training_input_latest.md").read_text(encoding="utf-8")
+        assert still_current == "newer-report"
+
+
+def test_recover_baseline_workspace_restores_managed_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_root = Path(tmp) / "state"
+        artifacts_root = Path(tmp) / "artifacts"
+        baseline = state_root / "ppo" / "baseline"
+        source = state_root / "ppo" / "Test_1"
+        _write_file(baseline / "metadata.json", json.dumps({"name": "old-baseline"}))
+        _write_file(source / "metadata.json", json.dumps({"name": "test1"}))
+        _write_file(artifacts_root / "training_input" / "training_input_latest.md", "baseline-report")
+        _write_file(artifacts_root / "phase3_compare" / "model_agent_compare_latest.md", "compare-report")
+        promote = promote_to_baseline(state_root, "Test_1")
+        assert promote.ok
+        archive = promote.archive_path
+        assert archive is not None
+
+        _write_file(artifacts_root / "training_input" / "training_input_latest.md", "newer-report")
+        _write_file(artifacts_root / "phase3_compare" / "model_agent_compare_latest.md", "newer-compare")
+        recover = recover_baseline(state_root, archive, include_artifacts=True)
+
+        assert recover.ok
         restored = (artifacts_root / "training_input" / "training_input_latest.md").read_text(encoding="utf-8")
         assert restored == "baseline-report"
+        # Compare artifacts are intentionally excluded from snapshot restore.
+        still_compare = (artifacts_root / "phase3_compare" / "model_agent_compare_latest.md").read_text(encoding="utf-8")
+        assert still_compare == "newer-compare"
 
 
 def test_list_models_excludes_internal_dirs() -> None:

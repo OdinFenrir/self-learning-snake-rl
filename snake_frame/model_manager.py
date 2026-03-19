@@ -24,8 +24,6 @@ _BASELINE = "baseline"
 _MANAGED_ARTIFACT_SUBDIRS = (
     "training_input",
     "agent_performance",
-    "phase3_compare",
-    "model_agent_compare",
     "live_eval",
     "share",
     "reports",
@@ -90,7 +88,7 @@ def promote_to_baseline(state_root: Path, source_model: str) -> ModelManagerResu
     if not source_dir.exists() or not source_dir.is_dir():
         return ModelManagerResult(ok=False, message=f"Model not found: {source}")
 
-    archive_path = _archive_baseline_if_present(state_root)
+    archive_path = _archive_baseline_if_present(state_root, include_artifacts=True)
     try:
         if baseline_dir.exists():
             shutil.rmtree(baseline_dir)
@@ -133,7 +131,7 @@ def delete_model(
     return ModelManagerResult(ok=True, message=f"Deleted model: {name}")
 
 
-def recover_baseline(state_root: Path, archive_zip: Path) -> ModelManagerResult:
+def recover_baseline(state_root: Path, archive_zip: Path, *, include_artifacts: bool = False) -> ModelManagerResult:
     ppo_root = state_root / "ppo"
     archives_dir = ppo_root / "_archives"
     archive_path = archive_zip.resolve()
@@ -150,12 +148,13 @@ def recover_baseline(state_root: Path, archive_zip: Path) -> ModelManagerResult:
         return ModelManagerResult(ok=False, message=f"Invalid baseline archive: {manifest_error}")
 
     baseline_dir = ppo_root / _BASELINE
-    current_archive = _archive_baseline_if_present(state_root)
+    current_archive = _archive_baseline_if_present(state_root, include_artifacts=bool(include_artifacts))
     try:
         if baseline_dir.exists():
             shutil.rmtree(baseline_dir)
         baseline_dir.mkdir(parents=True, exist_ok=True)
-        _clear_managed_artifacts(state_root)
+        if include_artifacts:
+            _clear_managed_artifacts(state_root)
         project_root = _project_root_from_state(state_root)
         with zipfile.ZipFile(archive_path, "r") as zf:
             for name in zf.namelist():
@@ -167,6 +166,11 @@ def recover_baseline(state_root: Path, archive_zip: Path) -> ModelManagerResult:
                     rel = name[len("state/ppo/baseline/") :]
                     target = baseline_dir / rel
                 elif name.startswith("artifacts/"):
+                    if not include_artifacts:
+                        continue
+                    artifact_rel = name[len("artifacts/") :]
+                    if not _artifact_rel_is_managed(artifact_rel):
+                        continue
                     target = project_root / name
                 else:
                     # Backward compatibility with legacy archives that only stored baseline files.
@@ -185,7 +189,7 @@ def recover_baseline(state_root: Path, archive_zip: Path) -> ModelManagerResult:
     )
 
 
-def _archive_baseline_if_present(state_root: Path) -> Path | None:
+def _archive_baseline_if_present(state_root: Path, *, include_artifacts: bool) -> Path | None:
     ppo_root = state_root / "ppo"
     baseline_dir = ppo_root / _BASELINE
     if not baseline_dir.exists() or not baseline_dir.is_dir():
@@ -201,6 +205,9 @@ def _archive_baseline_if_present(state_root: Path) -> Path | None:
         "schema_version": 1,
         "operation": "archive_baseline",
         "source_model": _BASELINE,
+        "snapshot_scope": "model_plus_artifacts" if include_artifacts else "model_only",
+        "includes_artifacts": bool(include_artifacts),
+        "managed_artifact_roots": [f"artifacts/{v}" for v in _MANAGED_ARTIFACT_SUBDIRS] if include_artifacts else [],
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "archive_name": archive_name,
         "entries": [],
@@ -214,7 +221,7 @@ def _archive_baseline_if_present(state_root: Path) -> Path | None:
     total_size = 0
     file_count = 0
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for child, rel in _iter_archive_sources(state_root):
+        for child, rel in _iter_archive_sources(state_root, include_artifacts=include_artifacts):
             blob = child.read_bytes()
             sha = hashlib.sha256(blob).hexdigest()
             zf.write(child, arcname=rel)
@@ -270,7 +277,7 @@ def _managed_artifact_roots(state_root: Path) -> list[Path]:
     return [artifacts_root / sub for sub in _MANAGED_ARTIFACT_SUBDIRS]
 
 
-def _iter_archive_sources(state_root: Path) -> list[tuple[Path, str]]:
+def _iter_archive_sources(state_root: Path, *, include_artifacts: bool) -> list[tuple[Path, str]]:
     ppo_root = state_root / "ppo"
     baseline_dir = ppo_root / _BASELINE
     out: list[tuple[Path, str]] = []
@@ -278,14 +285,15 @@ def _iter_archive_sources(state_root: Path) -> list[tuple[Path, str]]:
         if child.is_file():
             rel = f"state/ppo/{_BASELINE}/{child.relative_to(baseline_dir).as_posix()}"
             out.append((child, rel))
-    for root in _managed_artifact_roots(state_root):
-        if not root.exists() or not root.is_dir():
-            continue
-        for child in sorted(root.rglob("*")):
-            if not child.is_file():
+    if include_artifacts:
+        for root in _managed_artifact_roots(state_root):
+            if not root.exists() or not root.is_dir():
                 continue
-            rel = f"artifacts/{child.relative_to(root.parent).as_posix()}"
-            out.append((child, rel))
+            for child in sorted(root.rglob("*")):
+                if not child.is_file():
+                    continue
+                rel = f"artifacts/{child.relative_to(root.parent).as_posix()}"
+                out.append((child, rel))
     return out
 
 
@@ -297,3 +305,11 @@ def _clear_managed_artifacts(state_root: Path) -> None:
         except OSError:
             # Ignore cleanup failure to avoid blocking critical model operations.
             continue
+
+
+def _artifact_rel_is_managed(artifact_rel: str) -> bool:
+    rel = str(artifact_rel or "").replace("\\", "/").lstrip("/")
+    if not rel:
+        return False
+    head = rel.split("/", 1)[0]
+    return head in _MANAGED_ARTIFACT_SUBDIRS

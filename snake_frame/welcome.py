@@ -325,16 +325,17 @@ def show_welcome_window() -> WelcomeRoute | None:
             row = pygame.Rect(manager_left.x + 10, model_y, manager_left.width - 20, manager_row_h)
             manager_model_rows.append(row)
             model_y += manager_row_h + 8
-        manager_archive_rows: list[pygame.Rect] = []
-        archive_y = manager_right.y + 246
         archive_row_h = 36
+        manager_btn_promote = pygame.Rect(manager_right.x + 10, manager_right.y + 58, manager_right.width - 20, 42)
+        manager_btn_delete = pygame.Rect(manager_right.x + 10, manager_btn_promote.bottom + 10, manager_right.width - 20, 42)
+        manager_btn_recover_model = pygame.Rect(manager_right.x + 10, manager_btn_delete.bottom + 10, manager_right.width - 20, 42)
+        manager_btn_recover_workspace = pygame.Rect(manager_right.x + 10, manager_btn_recover_model.bottom + 10, manager_right.width - 20, 42)
+        archive_y = manager_btn_recover_workspace.bottom + 20
+        manager_archive_rows: list[pygame.Rect] = []
         for _ in manager_archives[:6]:
             row = pygame.Rect(manager_right.x + 10, archive_y, manager_right.width - 20, archive_row_h)
             manager_archive_rows.append(row)
             archive_y += archive_row_h + 8
-        manager_btn_promote = pygame.Rect(manager_right.x + 10, manager_right.y + 58, manager_right.width - 20, 42)
-        manager_btn_delete = pygame.Rect(manager_right.x + 10, manager_btn_promote.bottom + 10, manager_right.width - 20, 42)
-        manager_btn_recover = pygame.Rect(manager_right.x + 10, manager_btn_delete.bottom + 10, manager_right.width - 20, 42)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -430,20 +431,45 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 manager_recover_confirm_until_s = 0.0
                         else:
                             status_text = "No model selected."
-                    elif manager_btn_recover.collidepoint(event.pos):
+                    elif manager_btn_recover_model.collidepoint(event.pos):
                         if manager_selected_archive is not None:
                             now_s = float(time.monotonic())
                             archive_key = str(manager_selected_archive.name)
+                            confirm_key = f"model:{archive_key}"
                             armed = (
-                                manager_recover_confirm_archive == archive_key
+                                manager_recover_confirm_archive == confirm_key
                                 and now_s <= float(manager_recover_confirm_until_s)
                             )
                             if not armed:
-                                manager_recover_confirm_archive = archive_key
+                                manager_recover_confirm_archive = confirm_key
                                 manager_recover_confirm_until_s = now_s + 8.0
-                                status_text = f"Recover armed for {archive_key}. Click again within 8s to confirm."
+                                status_text = f"Recover model-only armed for {archive_key}. Click again within 8s to confirm."
                             else:
-                                result = recover_baseline(root / "state", manager_selected_archive)
+                                result = recover_baseline(root / "state", manager_selected_archive, include_artifacts=False)
+                                status_text = result.message
+                                manager_recover_confirm_archive = ""
+                                manager_recover_confirm_until_s = 0.0
+                                manager_delete_confirm_model = ""
+                                manager_delete_confirm_until_s = 0.0
+                                manager_promote_confirm_model = ""
+                                manager_promote_confirm_until_s = 0.0
+                        else:
+                            status_text = "No archive selected."
+                    elif manager_btn_recover_workspace.collidepoint(event.pos):
+                        if manager_selected_archive is not None:
+                            now_s = float(time.monotonic())
+                            archive_key = str(manager_selected_archive.name)
+                            confirm_key = f"workspace:{archive_key}"
+                            armed = (
+                                manager_recover_confirm_archive == confirm_key
+                                and now_s <= float(manager_recover_confirm_until_s)
+                            )
+                            if not armed:
+                                manager_recover_confirm_archive = confirm_key
+                                manager_recover_confirm_until_s = now_s + 8.0
+                                status_text = f"Recover workspace snapshot armed for {archive_key}. Click again within 8s to confirm."
+                            else:
+                                result = recover_baseline(root / "state", manager_selected_archive, include_artifacts=True)
                                 status_text = result.message
                                 manager_recover_confirm_archive = ""
                                 manager_recover_confirm_until_s = 0.0
@@ -538,16 +564,17 @@ def show_welcome_window() -> WelcomeRoute | None:
                         now_s = float(time.monotonic())
                         archive = manager_archives[manager_archive_idx]
                         archive_key = str(archive.name)
+                        confirm_key = f"model:{archive_key}"
                         armed = (
-                            manager_recover_confirm_archive == archive_key
+                            manager_recover_confirm_archive == confirm_key
                             and now_s <= float(manager_recover_confirm_until_s)
                         )
                         if not armed:
-                            manager_recover_confirm_archive = archive_key
+                            manager_recover_confirm_archive = confirm_key
                             manager_recover_confirm_until_s = now_s + 8.0
-                            status_text = f"Recover armed for {archive_key}. Press R again within 8s to confirm."
+                            status_text = f"Recover model-only armed for {archive_key}. Press R again within 8s to confirm."
                         else:
-                            result = recover_baseline(root / "state", archive)
+                            result = recover_baseline(root / "state", archive, include_artifacts=False)
                             status_text = result.message
                             manager_recover_confirm_archive = ""
                             manager_recover_confirm_until_s = 0.0
@@ -616,7 +643,7 @@ def show_welcome_window() -> WelcomeRoute | None:
             cards = [
                 (menu_cards[0][0], "Live Training", "Open game and training controls"),
                 (menu_cards[1][0], "Analysis Tools", "Open reports and diagnostics workspace"),
-                (menu_cards[2][0], "Model Manager", "Promote baseline, archive, delete, recover"),
+                (menu_cards[2][0], "Model Manager", "Promote baseline, snapshot, delete, recover"),
                 (menu_cards[3][0], "Application Settings", "Open options and preferences"),
             ]
             for idx, (rect, label, sub) in enumerate(cards):
@@ -850,7 +877,7 @@ def show_welcome_window() -> WelcomeRoute | None:
                     label = item_font.render(_fit_text(item_font, name, row.width - 16), True, theme.section_header)
                     surface.blit(label, (row.x + 10, row.y + (row.height - label.get_height()) // 2))
 
-            right_title = item_font.render("Baseline Operations", True, theme.section_header)
+            right_title = item_font.render("Baseline Snapshot Operations", True, theme.section_header)
             surface.blit(right_title, (manager_right.x + 12, manager_right.y + 10))
 
             selected_model_text = manager_selected_model if manager_selected_model else "none"
@@ -862,9 +889,14 @@ def show_welcome_window() -> WelcomeRoute | None:
                 and manager_delete_confirm_model == manager_selected_model
                 and now_s <= float(manager_delete_confirm_until_s)
             )
-            recover_armed = (
+            recover_model_armed = (
                 manager_selected_archive is not None
-                and manager_recover_confirm_archive == str(manager_selected_archive.name)
+                and manager_recover_confirm_archive == f"model:{manager_selected_archive.name}"
+                and now_s <= float(manager_recover_confirm_until_s)
+            )
+            recover_workspace_armed = (
+                manager_selected_archive is not None
+                and manager_recover_confirm_archive == f"workspace:{manager_selected_archive.name}"
                 and now_s <= float(manager_recover_confirm_until_s)
             )
             promote_armed = (
@@ -873,12 +905,18 @@ def show_welcome_window() -> WelcomeRoute | None:
                 and now_s <= float(manager_promote_confirm_until_s)
             )
             delete_label = "Confirm Delete" if delete_armed else "Delete Selected Model"
-            recover_label = "Confirm Recover" if recover_armed else "Recover Baseline From Archive"
+            recover_model_label = "Confirm Recover Model" if recover_model_armed else "Recover Baseline (Model Only)"
+            recover_workspace_label = (
+                "Confirm Recover Snapshot"
+                if recover_workspace_armed
+                else "Recover Baseline (Model + Artifacts)"
+            )
             promote_label = "Confirm Promote" if promote_armed else "Set Selected As Baseline"
             action_buttons = [
                 (manager_btn_promote, promote_label, theme.toggle_positive_bg),
                 (manager_btn_delete, delete_label, theme.toggle_negative_bg),
-                (manager_btn_recover, recover_label, theme.toggle_info_bg),
+                (manager_btn_recover_model, recover_model_label, theme.toggle_info_bg),
+                (manager_btn_recover_workspace, recover_workspace_label, theme.toggle_info_bg),
             ]
             for rect, label, tone in action_buttons:
                 hovered = rect.collidepoint(mouse_pos)
@@ -894,10 +932,10 @@ def show_welcome_window() -> WelcomeRoute | None:
                 surface.blit(txt, (rect.centerx - txt.get_width() // 2, rect.y + (rect.height - txt.get_height()) // 2))
 
             archive_title = item_font.render("Baseline Archives", True, theme.section_header)
-            surface.blit(archive_title, (manager_right.x + 12, manager_right.y + 214))
+            surface.blit(archive_title, (manager_right.x + 12, manager_btn_recover_workspace.bottom + 4))
             if not manager_archives:
                 empty = small_font.render("No baseline archives available.", True, theme.status_color)
-                surface.blit(empty, (manager_right.x + 12, manager_right.y + 246))
+                surface.blit(empty, (manager_right.x + 12, manager_btn_recover_workspace.bottom + 34))
             else:
                 for idx, row in enumerate(manager_archive_rows):
                     archive_name = manager_archives[idx].name
