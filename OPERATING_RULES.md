@@ -65,4 +65,4 @@ Run tests with:
 .venv/Scripts/python.exe -m pytest tests/ -v
 ```
 
-All 232 tests must pass.
+All tests in the current suite must pass.

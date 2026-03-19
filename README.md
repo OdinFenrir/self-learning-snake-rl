@@ -11,21 +11,35 @@ The goal is simple: train an agent, watch it play live, measure failures, and it
 - Implemented learned controller memory (online arbiter + clustered tactic memory) that persists across sessions
 - Handled failure recovery for local persisted state with atomic writes and rollback
 
+## Documentation
+
+Use these docs directly from the main page:
+
+- [README](README.md) - product overview, setup, UI flow, and validation commands
+- [Architecture](ARCHITECTURE.md) - runtime modules, decision stack, data/artifact contracts
+- [Operating Rules](OPERATING_RULES.md) - experiment isolation and comparison discipline
+- [Trusted Baselines](TRUSTED_BASELINES.md) - benchmark trust boundary and baseline references
+- [Changelog](CHANGELOG.md) - chronological project changes
+
 ## Demo
 
 ### Live Training UI
 
-Phase 1:
+Menu 1:
 
-![Snake Frame live training UI](docs/assets/live_training_ui.png)
+![Snake Frame menu 1](docs/assets/live_training_ui_menu1.png)
 
-Phase 2:
+Menu 2:
 
-![Snake Frame live training UI phase 2](docs/assets/live_training_ui_phase2.png)
+![Snake Frame menu 2](docs/assets/live_training_ui_menu2.png)
 
-Phase 3:
+Menu 3:
 
-![Snake Frame live training UI phase 3](docs/assets/live_training_ui_phase3.png)
+![Snake Frame menu 3](docs/assets/live_training_ui_menu3.png)
+
+Menu 4:
+
+![Snake Frame menu 4](docs/assets/live_training_ui_menu4.png)
 
 ## Project Overview
 
@@ -156,9 +170,15 @@ For trustworthy comparisons, cite:
 
 - `Start Train` / `Stop Train`
 - `Save` / `Load` / `Delete`
-- `Start Game` / `Stop Game` / `Restart`
-- Options: adaptive reward, space strategy, themes/backgrounds, debug overlays, diagnostics export
-- The settings panel shows the active experiment name so you can see which artifact directory the app is using
+- `Start Manual` or `Start Agent` (context-aware) / `Stop Game` / `Restart`
+- Right panel tabs: `Train`, `Run`, `Debug`
+- Session block includes persistent model save status (`Saved: ...`)
+- Options panel groups:
+  - `Training`: Reward Shaping, Safe Space Bias, Tail Trend Assist
+  - `Visual`: Theme, Board Style, Snake Look, Fog Level
+  - `Playback Speed`: Slower / Faster
+  - `Model Checks`: Run Full Evaluation, Run Holdout Check, Eval mode toggle (PPO vs Controller)
+  - `Debug & Tools`: Debug Overlay, Reachability Overlay, Export Diagnostics
 
 ## Persistence
 
@@ -209,33 +229,19 @@ Blind-spot replay one-shot (Windows):
   - `artifacts/live_eval/blind_spot_replay_latest.json`
   - `artifacts/live_eval/blind_spot_replay_latest.html`
 
-## Evaluation Protocol + Current Baseline
+## Evaluation Protocol + Baseline Tracking
 
-Reference date: **March 15, 2026**
-
-Protocol used for comparable controller-vs-PPO checks:
+Protocol for comparable controller-vs-PPO checks:
 1. Use fixed holdout seeds `17001-17030`.
 2. Run paired evaluation with the same model selector (`last`): `ppo_only` then `controller_on`.
 3. Keep controller learning disabled during holdout eval (prevents eval contamination/drift).
 4. Compare paired seed deltas (`controller - ppo`) and aggregate means.
 5. Re-check repeatability on worst-10 seeds from `artifacts/live_eval/worst10_latest.json`.
 
-Current validated baseline (fixed-seed paired run):
-- `ppo_only` mean: `56.67`
-- `controller_on` mean: `81.27`
-- mean delta (`controller - ppo`): `+24.6`
-- mean intervention rate (`controller_on`): `3.22%`
-- paired seeds: `30` (`9` worse, `18` improved, `3` equal)
-
-Worst-10 repeatability check (controller-on, same seeds run twice):
-- run 1 mean: `112.5`
-- run 2 mean: `112.5`
-- per-seed scores identical across both runs: `true`
-
-Supporting local artifacts (generated during validation, typically not committed):
-- `artifacts/live_eval/tmp_ablation/full30_guard099_trust090.json`
-- `artifacts/live_eval/tmp_ablation/worst10_ablation_combo.json`
-- `artifacts/live_eval/tmp_patch_suite/controller_repeatability_worst10.json`
+For the current canonical baseline values and trust cutoff, use:
+- `TRUSTED_BASELINES.md`
+- the latest suite under `artifacts/live_eval/suites/`
+- matching `state/ppo/<experiment_name>/metadata.json`
 
 ## Validation Commands (Local)
 
@@ -257,7 +263,7 @@ GitHub Actions workflow definitions are in place for fast validation on push/PR.
 - Unit and integration tests
 - Render regression checks
 
-Full ML training/evaluation gates remain local because they are runtime-heavy and hardware-sensitive (CPU-based training, long runtimes, timing-sensitive smoke gates).
+Full ML training/evaluation gates remain local because they are runtime-heavy and hardware-sensitive (long runtimes and timing-sensitive smoke gates on local hardware profiles).
 
 Local validation commands are documented above.
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-03-19 - documentation and demo refresh
+
+- Updated `README.md` to act as a documentation hub from the main page with direct links to:
+  - `ARCHITECTURE.md`
+  - `OPERATING_RULES.md`
+  - `TRUSTED_BASELINES.md`
+  - `CHANGELOG.md`
+- Replaced old 3-phase UI demo screenshots with the latest 4 menu screenshots:
+  - `docs/assets/live_training_ui_menu1.png`
+  - `docs/assets/live_training_ui_menu2.png`
+  - `docs/assets/live_training_ui_menu3.png`
+  - `docs/assets/live_training_ui_menu4.png`
+- Removed obsolete demo screenshot assets:
+  - `docs/assets/live_training_ui.png`
+  - `docs/assets/live_training_ui_phase2.png`
+  - `docs/assets/live_training_ui_phase3.png`
+- Updated README control/option wording to match current UI labels:
+  - `Start Manual` / `Start Agent`
+  - `Reward Shaping`, `Safe Space Bias`, `Tail Trend Assist`
+  - `Board Style`, `Snake Look`, `Fog Level`
+  - `Run Full Evaluation`, `Run Holdout Check`, eval mode toggles
+- Replaced stale fixed baseline snapshot block in README with a stable baseline-tracking contract referencing `TRUSTED_BASELINES.md`.
+- Updated docs language that implied CPU-only training/evaluation.
+- Updated `docs/assets/README.txt` to list current screenshot assets.
+- Updated `OPERATING_RULES.md` to require all current tests to pass without a hardcoded test-count.
+
 ## 2026-03-12 - visual asset customization
 
 - Added Options modal board background cycling:
