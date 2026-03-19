@@ -741,8 +741,9 @@ class SnakeFrameApp:
         if result.invalid or not payload:
             return False
 
-        active_experiment = str(payload.get("activeExperiment", self.experiment_name or "baseline")).strip()
-        if active_experiment and active_experiment != self.experiment_name:
+        current_experiment = str(getattr(self, "experiment_name", "baseline") or "baseline").strip()
+        active_experiment = str(payload.get("activeExperiment", current_experiment)).strip()
+        if active_experiment and active_experiment != current_experiment:
             if not self._switch_experiment(active_experiment):
                 logger.warning("Failed to restore active experiment from preferences: %s", active_experiment)
 
@@ -814,7 +815,7 @@ class SnakeFrameApp:
             height = int(self.layout.window.height)
         payload = {
             "uiPrefsVersion": 1,
-            "activeExperiment": str(self.experiment_name),
+            "activeExperiment": str(getattr(self, "experiment_name", "baseline") or "baseline"),
             "themeName": self.theme.name,
             "windowBorderless": bool(self.settings.window_borderless),
             "windowWidth": width,
@@ -911,7 +912,7 @@ class SnakeFrameApp:
             self.btn_eval_holdout.enabled = bool(eval_enabled)
         control_policy = self._derive_control_policy()
         if control_policy.run_paused_waiting_snapshot:
-            self.btn_game_start.label = "Start Wait"
+            self.btn_game_start.label = "Start Wait (waiting)"
         elif control_policy.manual_can_steer:
             self.btn_game_start.label = "Start Manual"
         else:

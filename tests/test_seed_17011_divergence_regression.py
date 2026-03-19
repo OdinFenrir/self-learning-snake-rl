@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.compare_seed_traces import build_report
 
 
 def test_seed_17011_first_divergence_pattern_is_locked() -> None:
     control = Path("artifacts/live_eval/focused_traces/20260315_094901_risk_diag_control_noexp/seed_17011.jsonl")
     experiment = Path("artifacts/live_eval/focused_traces/20260315_094808_risk_diag_narrow_np_margin0/seed_17011.jsonl")
-    assert control.exists(), f"Missing control trace: {control}"
-    assert experiment.exists(), f"Missing experiment trace: {experiment}"
+    if not control.exists() or not experiment.exists():
+        pytest.skip("seed 17011 divergence traces are not present in this environment")
 
     import json
 
