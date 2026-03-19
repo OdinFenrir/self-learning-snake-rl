@@ -100,6 +100,36 @@ class _DecisionContext:
     override_used: bool
 
 
+@dataclass(frozen=True)
+class _CandidateAnalysis:
+    action: int
+    candidate_head: tuple[int, int]
+    danger: bool
+    simulated_snake: tuple[tuple[int, int], ...]
+    reachable_count: int
+    tail_reachable: bool
+    capacity_shortfall: int
+    next_food_dist: int
+    food_progress: int
+    revisit_count: int
+    score: float | None
+    eval_result: tuple[float, bool, int] | None
+    viable: bool
+
+
+@dataclass(frozen=True)
+class _DecisionTraceInputs:
+    proposed_action: int
+    board_cells: int
+    snake: tuple[tuple[int, int], ...]
+    direction: tuple[int, int]
+    food: tuple[int, int]
+    food_pressure: float
+    no_progress_steps: int
+    candidate_analyses: tuple[tuple[int, _CandidateAnalysis], ...]
+    action_eval_tuples: tuple[tuple[str, dict[str, object]], ...]
+
+
 class GameplayController:
     _TAIL_REACHABLE_BONUS = 1200.0
     _TAIL_UNREACHABLE_PENALTY = 1600.0
@@ -174,6 +204,9 @@ class GameplayController:
         self._last_no_exit_state = False
         self._last_entered_no_exit_this_step = False
         self._last_action_eval_tuples: dict[str, dict[str, object]] = {}
+        self._last_candidate_analyses: dict[int, _CandidateAnalysis] = {}
+        self._candidate_eval_cache: dict[tuple[object, ...], _CandidateAnalysis] = {}
+        self._last_trace_inputs: _DecisionTraceInputs | None = None
         self._space_strategy_enabled = bool(space_strategy_enabled)
         self._escape_controller = EscapeController()
         self._space_fill_controller = SpaceFillController()
@@ -198,11 +231,26 @@ class GameplayController:
         self._tactic_memory = (
             TacticMemoryBank.load(self._tactic_memory_path, fallback_dim=self._arbiter_feature_dim)
             if bool(self._persist_learning)
-            else TacticMemoryBank(dim=self._arbiter_feature_dim)
+            else TacticMemoryBank(
+                dim=self._arbiter_feature_dim,
+                max_clusters=self._dynamic_cfg.tactic_memory_max_clusters,
+                merge_radius=self._dynamic_cfg.tactic_memory_merge_radius,
+                memory_weight=self._dynamic_cfg.tactic_memory_weight,
+                adaptive_merge=self._dynamic_cfg.tactic_memory_adaptive_merge,
+                crowded_radius=self._dynamic_cfg.tactic_memory_merge_radius_crowded,
+                open_radius=self._dynamic_cfg.tactic_memory_merge_radius_open,
+                low_threshold=self._dynamic_cfg.tactic_memory_merge_ratio_low,
+                high_threshold=self._dynamic_cfg.tactic_memory_merge_ratio_high,
+            )
         )
         self._tactic_memory.max_clusters = int(getattr(self._dynamic_cfg, "tactic_memory_max_clusters", self._tactic_memory.max_clusters))
         self._tactic_memory.merge_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius", self._tactic_memory.merge_radius))
         self._tactic_memory.memory_weight = float(getattr(self._dynamic_cfg, "tactic_memory_weight", self._tactic_memory.memory_weight))
+        self._tactic_memory._adaptive_merge = bool(getattr(self._dynamic_cfg, "tactic_memory_adaptive_merge", self._tactic_memory._adaptive_merge))
+        self._tactic_memory._crowded_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius_crowded", self._tactic_memory._crowded_radius))
+        self._tactic_memory._open_radius = float(getattr(self._dynamic_cfg, "tactic_memory_merge_radius_open", self._tactic_memory._open_radius))
+        self._tactic_memory._low_threshold = float(getattr(self._dynamic_cfg, "tactic_memory_merge_ratio_low", self._tactic_memory._low_threshold))
+        self._tactic_memory._high_threshold = float(getattr(self._dynamic_cfg, "tactic_memory_merge_ratio_high", self._tactic_memory._high_threshold))
         self._dynamic = DynamicControllerState()
         self._last_score_seen = int(getattr(self.game, "score", 0))
         self._last_action: int | None = None
@@ -223,6 +271,7 @@ class GameplayController:
         self._debug_overlay_enabled = False
         self._reachable_overlay_enabled = False
         self._last_death_reason = "none"
+        self._tail_trend_enabled = bool(getattr(self.obs_config, "use_tail_trend_features", True))
 
     def set_debug_options(self, *, debug_overlay: bool, reachable_overlay: bool) -> None:
         self._debug_overlay_enabled = bool(debug_overlay)
@@ -230,6 +279,9 @@ class GameplayController:
 
     def set_learning_enabled(self, enabled: bool) -> None:
         self._learning_enabled = bool(enabled)
+
+    def set_tail_trend_enabled(self, enabled: bool) -> None:
+        self._tail_trend_enabled = bool(enabled)
 
     def step(self, game_running: bool) -> None:
         if not bool(game_running):
@@ -302,6 +354,7 @@ class GameplayController:
                     action=int(ctx.chosen_action),
                     success=bool(success),
                     weight=float(weight),
+                    free_ratio=float(ctx.features[0]) if ctx.features else None,
                 )
                 self._tactic_dirty = True
 
@@ -351,8 +404,8 @@ class GameplayController:
             direction=self.game.direction,
             food=self.game.food,
             obs_config=self.obs_config,
-            tail_reachable_streak=self._tail_reachable_streak,
-            tail_unreachable_streak=self._tail_unreachable_streak,
+            tail_reachable_streak=self._tail_reachable_streak if bool(self._tail_trend_enabled) else 0,
+            tail_unreachable_streak=self._tail_unreachable_streak if bool(self._tail_trend_enabled) else 0,
         )
         action_probs: tuple[float, float, float] | None = None
         debug_needed = bool(self._debug_overlay_enabled or self._reachable_overlay_enabled)
@@ -400,6 +453,7 @@ class GameplayController:
                 chosen_action=action,
                 action_probs=action_probs,
                 include_reachable_cells=bool(self._reachable_overlay_enabled),
+                candidate_analyses=self._last_candidate_analyses,
             )
         else:
             self._debug_snapshot = None
@@ -474,16 +528,21 @@ class GameplayController:
         surface.blit(font.render(legend, True, (210, 220, 240)), (ox + 10, oy + 180))
 
     def _choose_safe_action(self, proposed_action: int) -> int:
+        self._candidate_eval_cache = {}
+        self._last_candidate_analyses = {}
         board_cells = int(self.settings.board_cells)
         snake = list(self.game.snake)
         direction = tuple(self.game.direction)
         food = tuple(self.game.food)
         safe_option_count = 0
         head = snake[0]
+        danger_by_action: dict[int, bool] = {}
         for action in (0, 1, 2):
             cand_dir = action_to_direction(direction, action)
             cand_head = next_head(head, cand_dir)
-            if not is_danger(board_cells, snake, cand_head):
+            danger = bool(is_danger(board_cells, snake, cand_head))
+            danger_by_action[int(action)] = bool(danger)
+            if not danger:
                 safe_option_count += 1
         prev_safe_option_count = int(self._last_safe_option_count)
         self._last_safe_option_count = int(safe_option_count)
@@ -521,6 +580,7 @@ class GameplayController:
         self._last_pre_no_exit_guard_near_no_exit_signal = False
         self._last_entered_no_exit_this_step = False
         self._last_action_eval_tuples = {}
+        self._last_trace_inputs = None
 
         if not bool(self._dynamic_cfg.enable_dynamic_control):
             action = self._legacy_safe_action(
@@ -565,30 +625,75 @@ class GameplayController:
             and float(food_pressure) <= 0.70
         )
         effective_proposed_viable = bool(proposed_viable) or bool(relaxed_open_viable)
-        if bool(self._debug_overlay_enabled or self._reachable_overlay_enabled):
-            self._last_action_eval_tuples = self._build_runtime_action_eval_tuples(
-                proposed_action=int(proposed_action),
+        candidate_analyses: dict[int, _CandidateAnalysis] = {
+            int(proposed_action): self._synthesize_candidate_analysis(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(proposed_action),
+                eval_result=proposed_eval,
+                food_pressure=float(food_pressure),
+                known_danger=bool(danger_by_action.get(int(proposed_action), proposed_eval is None)),
+            )
+        }
+        for action, is_dangerous in danger_by_action.items():
+            if bool(is_dangerous):
+                candidate_analyses[int(action)] = self._synthesize_candidate_analysis(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    action=int(action),
+                    eval_result=None,
+                    food_pressure=float(food_pressure),
+                    known_danger=True,
+                )
+        if int(safe_option_count) <= 1:
+            self._ensure_safe_candidate_analyses(
                 board_cells=board_cells,
                 snake=snake,
                 direction=direction,
                 food=food,
                 food_weight=float(food_weight),
                 capacity_penalty_scale=float(capacity_penalty_scale),
-                no_progress_steps=int(no_progress_steps),
                 food_pressure=float(food_pressure),
+                danger_by_action=danger_by_action,
+                candidate_analyses=candidate_analyses,
             )
-        no_exit_state = self._compute_no_exit_state(
-            safe_option_count=int(safe_option_count),
+        self._last_candidate_analyses = dict(candidate_analyses)
+        self._last_action_eval_tuples = self._build_runtime_action_eval_tuples(
+            proposed_action=int(proposed_action),
             board_cells=board_cells,
             snake=snake,
-            direction=direction,
             food=food,
-            food_weight=float(food_weight),
-            capacity_penalty_scale=float(capacity_penalty_scale),
             food_pressure=float(food_pressure),
+            no_progress_steps=int(no_progress_steps),
+            candidate_analyses=self._last_candidate_analyses,
+        )
+        self._last_trace_inputs = _DecisionTraceInputs(
+            proposed_action=int(proposed_action),
+            board_cells=int(board_cells),
+            snake=tuple((int(x), int(y)) for x, y in snake),
+            direction=(int(direction[0]), int(direction[1])),
+            food=(int(food[0]), int(food[1])),
+            food_pressure=float(food_pressure),
+            no_progress_steps=int(no_progress_steps),
+            candidate_analyses=tuple(
+                (int(action_key), analysis) for action_key, analysis in sorted(self._last_candidate_analyses.items())
+            ),
+            action_eval_tuples=tuple(
+                (str(action_key), dict(row)) for action_key, row in sorted(self._last_action_eval_tuples.items())
+            ),
+        )
+        prev_no_exit_state = bool(self._last_no_exit_state)
+        no_exit_state = self._compute_no_exit_state(
+            safe_option_count=int(safe_option_count),
+            candidate_analyses=self._last_candidate_analyses,
         )
         self._last_entered_no_exit_this_step = bool(no_exit_state and not bool(self._last_no_exit_state))
         self._last_no_exit_state = bool(no_exit_state)
+        no_exit_trend_active = bool(no_exit_state or prev_no_exit_state)
         self._last_proposed_viable = bool(effective_proposed_viable)
         if proposed_eval is not None:
             self._last_proposed_tail_reachable = bool(proposed_eval[1])
@@ -668,20 +773,29 @@ class GameplayController:
                     food=food,
                     food_weight=food_weight,
                     capacity_penalty_scale=capacity_penalty_scale,
+                    candidate_analyses=candidate_analyses,
+                    food_pressure=food_pressure,
+                    no_progress_steps=no_progress_steps,
+                    free_ratio=free_ratio,
                 )
                 self._last_pre_no_exit_guard_alt_action = int(alt_action)
                 if int(alt_action) == int(proposed_action):
                     guard_blockers.append("no_alternative_action")
                 else:
-                    alt_eval = self._evaluate_action(
-                        board_cells=board_cells,
-                        snake=snake,
-                        direction=direction,
-                        food=food,
-                        action=int(alt_action),
-                        food_weight=food_weight,
-                        capacity_penalty_scale=capacity_penalty_scale,
-                    )
+                    alt_analysis = candidate_analyses.get(int(alt_action))
+                    if alt_analysis is None or alt_analysis.eval_result is None:
+                        alt_analysis = self._analysis_for_action(
+                            board_cells=board_cells,
+                            snake=snake,
+                            direction=direction,
+                            food=food,
+                            action=int(alt_action),
+                            food_weight=float(food_weight),
+                            capacity_penalty_scale=float(capacity_penalty_scale),
+                            food_pressure=float(food_pressure),
+                        )
+                        candidate_analyses[int(alt_action)] = alt_analysis
+                    alt_eval = None if alt_analysis is None else alt_analysis.eval_result
                     if alt_eval is None:
                         guard_blockers.append("alt_eval_unavailable")
                     else:
@@ -740,17 +854,26 @@ class GameplayController:
                         food=food,
                         food_weight=food_weight,
                         capacity_penalty_scale=capacity_penalty_scale,
+                        candidate_analyses=candidate_analyses,
+                        food_pressure=food_pressure,
+                        no_progress_steps=no_progress_steps,
+                        free_ratio=free_ratio,
                     )
                     if int(alt_action) != int(proposed_action):
-                        alt_eval = self._evaluate_action(
-                            board_cells=board_cells,
-                            snake=snake,
-                            direction=direction,
-                            food=food,
-                            action=int(alt_action),
-                            food_weight=food_weight,
-                            capacity_penalty_scale=capacity_penalty_scale,
-                        )
+                        alt_analysis = candidate_analyses.get(int(alt_action))
+                        if alt_analysis is None or alt_analysis.eval_result is None:
+                            alt_analysis = self._analysis_for_action(
+                                board_cells=board_cells,
+                                snake=snake,
+                                direction=direction,
+                                food=food,
+                                action=int(alt_action),
+                                food_weight=float(food_weight),
+                                capacity_penalty_scale=float(capacity_penalty_scale),
+                                food_pressure=float(food_pressure),
+                            )
+                            candidate_analyses[int(alt_action)] = alt_analysis
+                        alt_eval = None if alt_analysis is None else alt_analysis.eval_result
                         if alt_eval is not None:
                             alt_viable = self._is_eval_viable(
                                 board_cells=board_cells,
@@ -888,20 +1011,29 @@ class GameplayController:
                     food=food,
                     food_weight=food_weight,
                     capacity_penalty_scale=capacity_penalty_scale,
+                    candidate_analyses=candidate_analyses,
+                    food_pressure=food_pressure,
+                    no_progress_steps=no_progress_steps,
+                    free_ratio=free_ratio,
                 )
                 if int(alt_action) == int(proposed_action):
                     significant_risk = False
                     self._dynamic.last_switch_reason = "risk_guard_hold"
                 else:
-                    alt_eval = self._evaluate_action(
-                        board_cells=board_cells,
-                        snake=snake,
-                        direction=direction,
-                        food=food,
-                        action=int(alt_action),
-                        food_weight=food_weight,
-                        capacity_penalty_scale=capacity_penalty_scale,
-                    )
+                    alt_analysis = candidate_analyses.get(int(alt_action))
+                    if alt_analysis is None or alt_analysis.eval_result is None:
+                        alt_analysis = self._analysis_for_action(
+                            board_cells=board_cells,
+                            snake=snake,
+                            direction=direction,
+                            food=food,
+                            action=int(alt_action),
+                            food_weight=float(food_weight),
+                            capacity_penalty_scale=float(capacity_penalty_scale),
+                            food_pressure=float(food_pressure),
+                        )
+                        candidate_analyses[int(alt_action)] = alt_analysis
+                    alt_eval = None if alt_analysis is None else alt_analysis.eval_result
                     if alt_eval is not None:
                         proposed_tail_ok = bool(proposed_eval[1])
                         proposed_shortfall = int(proposed_eval[2])
@@ -958,11 +1090,23 @@ class GameplayController:
                     food=food,
                     food_weight=food_weight,
                     capacity_penalty_scale=capacity_penalty_scale,
+                    candidate_analyses=candidate_analyses,
+                    food_pressure=food_pressure,
+                    no_progress_steps=no_progress_steps,
+                    free_ratio=free_ratio,
                 )
                 if action is not None:
                     self._loop_escape_steps_left = max(0, int(self._loop_escape_steps_left) - 1)
                     self._dynamic.last_switch_reason = "loop_escape_active"
-        if action is None and not imminent_danger and float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER):
+        food_pressure_override_allowed = bool(
+            int(safe_option_count) > 1 and not bool(no_exit_trend_active)
+        )
+        if (
+            action is None
+            and not imminent_danger
+            and bool(food_pressure_override_allowed)
+            and float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER)
+        ):
             action = self._best_safe_action(
                 proposed_action=int(proposed_action),
                 board_cells=board_cells,
@@ -971,6 +1115,10 @@ class GameplayController:
                 food=food,
                 food_weight=food_weight,
                 capacity_penalty_scale=capacity_penalty_scale,
+                candidate_analyses=candidate_analyses,
+                food_pressure=food_pressure,
+                no_progress_steps=no_progress_steps,
+                free_ratio=free_ratio,
             )
             if mode != ControlMode.PPO:
                 self._dynamic.last_switch_reason = "food_pressure"
@@ -998,6 +1146,10 @@ class GameplayController:
                 food=food,
                 food_weight=food_weight,
                 capacity_penalty_scale=capacity_penalty_scale,
+                candidate_analyses=candidate_analyses,
+                food_pressure=food_pressure,
+                no_progress_steps=no_progress_steps,
+                free_ratio=free_ratio,
             )
             if fallback_action is not None:
                 action = fallback_action
@@ -1011,6 +1163,10 @@ class GameplayController:
                     food=food,
                     food_weight=food_weight,
                     capacity_penalty_scale=capacity_penalty_scale,
+                    candidate_analyses=candidate_analyses,
+                    food_pressure=food_pressure,
+                    no_progress_steps=no_progress_steps,
+                    free_ratio=free_ratio,
                 )
             action = self._space_fill_controller.choose_action(
                 board_cells=board_cells,
@@ -1036,6 +1192,10 @@ class GameplayController:
                 food=food,
                 food_weight=food_weight,
                 capacity_penalty_scale=capacity_penalty_scale,
+                candidate_analyses=candidate_analyses,
+                food_pressure=food_pressure,
+                no_progress_steps=no_progress_steps,
+                free_ratio=free_ratio,
             )
         open_field_pressure_max = float(getattr(self._dynamic_cfg, "ppo_open_field_trust_food_pressure_max", 0.35))
         open_field_trust = bool(
@@ -1050,15 +1210,21 @@ class GameplayController:
         if open_field_trust:
             action = int(proposed_action)
             self._dynamic.last_switch_reason = "ppo_open_field_trust"
-        chosen_eval = self._evaluate_action(
-            board_cells=board_cells,
-            snake=snake,
-            direction=direction,
-            food=food,
-            action=int(action),
-            food_weight=food_weight,
-            capacity_penalty_scale=capacity_penalty_scale,
-        )
+        chosen_analysis = candidate_analyses.get(int(action))
+        if chosen_analysis is None:
+            chosen_analysis = self._analysis_for_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(action),
+                food_weight=float(food_weight),
+                capacity_penalty_scale=float(capacity_penalty_scale),
+                food_pressure=float(food_pressure),
+            )
+            candidate_analyses[int(action)] = chosen_analysis
+            self._last_candidate_analyses = dict(candidate_analyses)
+        chosen_eval = None if chosen_analysis is None else chosen_analysis.eval_result
         if (
             int(action) != int(proposed_action)
             and not imminent_danger
@@ -1157,24 +1323,17 @@ class GameplayController:
         self,
         *,
         safe_option_count: int,
-        board_cells: int,
-        snake: list[tuple[int, int]],
-        direction: tuple[int, int],
-        food: tuple[int, int],
-        food_weight: float,
-        capacity_penalty_scale: float,
-        food_pressure: float,
+        candidate_analyses: dict[int, _CandidateAnalysis],
     ) -> bool:
         if int(safe_option_count) > 1:
             return False
-        tuples = self._last_action_eval_tuples
-        if not tuples:
+        if not candidate_analyses:
             return False
-        for action in ("0", "1", "2"):
-            row = tuples.get(str(action)) or {}
-            if not bool(row.get("eval_available", False)):
+        for action in (0, 1, 2):
+            analysis = candidate_analyses.get(int(action))
+            if analysis is None or analysis.eval_result is None:
                 continue
-            if bool(row.get("viable", False)) and bool(row.get("tail_reachable", False)):
+            if bool(analysis.viable) and bool(analysis.tail_reachable):
                 return False
         return True
 
@@ -1187,33 +1346,55 @@ class GameplayController:
         food: tuple[int, int],
         food_weight: float,
         capacity_penalty_scale: float,
+        candidate_analyses: dict[int, _CandidateAnalysis] | None = None,
+        food_pressure: float | None = None,
+        no_progress_steps: int | None = None,
+        free_ratio: float | None = None,
     ) -> int | None:
         if not snake:
             return None
         head = snake[0]
         current_food_dist = abs(head[0] - food[0]) + abs(head[1] - food[1])
-        visit_counts: dict[tuple[int, int], int] = {}
-        for point in self._recent_heads:
-            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        current_food_pressure = self._food_pressure() if food_pressure is None else float(food_pressure)
+        current_no_progress = int(self._decisions_total - self._dynamic.last_food_step) if no_progress_steps is None else int(no_progress_steps)
+        current_free_ratio = (
+            float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells))
+            if free_ratio is None
+            else float(free_ratio)
+        )
+        analyses = candidate_analyses or self._collect_candidate_analyses(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            food_weight=float(food_weight),
+            capacity_penalty_scale=float(capacity_penalty_scale),
+            food_pressure=float(current_food_pressure),
+        )
 
         best_action: int | None = None
         best_key: tuple[float, ...] | None = None
         for action in (0, 1, 2):
-            eval_result = self._evaluate_action(
-                board_cells=board_cells,
-                snake=snake,
-                direction=direction,
-                food=food,
-                action=action,
-                food_weight=food_weight,
-                capacity_penalty_scale=capacity_penalty_scale,
-            )
+            analysis = analyses.get(int(action))
+            if analysis is None:
+                analysis = self._analysis_for_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    action=int(action),
+                    food_weight=float(food_weight),
+                    capacity_penalty_scale=float(capacity_penalty_scale),
+                    food_pressure=float(current_food_pressure),
+                )
+                analyses[int(action)] = analysis
+            eval_result = analysis.eval_result
             if eval_result is None:
                 continue
             score, tail_ok, shortfall = eval_result
-            candidate_head = next_head(head, action_to_direction(direction, int(action)))
-            revisit_count = int(visit_counts.get(candidate_head, 0))
-            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            candidate_head = analysis.candidate_head
+            revisit_count = int(analysis.revisit_count)
+            next_food_dist = int(analysis.next_food_dist)
             food_progress = int(current_food_dist - next_food_dist)
             turn_change = 1 if self._last_action is not None and int(action) != int(self._last_action) else 0
             key = (
@@ -1226,9 +1407,9 @@ class GameplayController:
                 + float(
                     self._tactic_memory.action_bias(
                         features=self._decision_features(
-                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
-                            food_pressure=self._food_pressure(),
-                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            free_ratio=float(current_free_ratio),
+                            food_pressure=float(current_food_pressure),
+                            no_progress_steps=int(current_no_progress),
                             cycle_repeat=False,
                             imminent_danger=False,
                             proposed_viable=True,
@@ -1253,33 +1434,55 @@ class GameplayController:
         food: tuple[int, int],
         food_weight: float,
         capacity_penalty_scale: float,
+        candidate_analyses: dict[int, _CandidateAnalysis] | None = None,
+        food_pressure: float | None = None,
+        no_progress_steps: int | None = None,
+        free_ratio: float | None = None,
     ) -> int | None:
         if not snake:
             return None
         head = snake[0]
         current_food_dist = abs(head[0] - food[0]) + abs(head[1] - food[1])
-        visit_counts: dict[tuple[int, int], int] = {}
-        for point in self._recent_heads:
-            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        current_food_pressure = self._food_pressure() if food_pressure is None else float(food_pressure)
+        current_no_progress = int(self._decisions_total - self._dynamic.last_food_step) if no_progress_steps is None else int(no_progress_steps)
+        current_free_ratio = (
+            float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells))
+            if free_ratio is None
+            else float(free_ratio)
+        )
+        analyses = candidate_analyses or self._collect_candidate_analyses(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            food_weight=float(food_weight),
+            capacity_penalty_scale=float(capacity_penalty_scale),
+            food_pressure=float(current_food_pressure),
+        )
 
         best_action: int | None = None
         best_key: tuple[float, ...] | None = None
         for action in (0, 1, 2):
-            eval_result = self._evaluate_action(
-                board_cells=board_cells,
-                snake=snake,
-                direction=direction,
-                food=food,
-                action=action,
-                food_weight=food_weight,
-                capacity_penalty_scale=capacity_penalty_scale,
-            )
+            analysis = analyses.get(int(action))
+            if analysis is None:
+                analysis = self._analysis_for_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    action=int(action),
+                    food_weight=float(food_weight),
+                    capacity_penalty_scale=float(capacity_penalty_scale),
+                    food_pressure=float(current_food_pressure),
+                )
+                analyses[int(action)] = analysis
+            eval_result = analysis.eval_result
             if eval_result is None:
                 continue
             score, tail_ok, shortfall = eval_result
-            candidate_head = next_head(head, action_to_direction(direction, int(action)))
-            revisit_count = int(visit_counts.get(candidate_head, 0))
-            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            candidate_head = analysis.candidate_head
+            revisit_count = int(analysis.revisit_count)
+            next_food_dist = int(analysis.next_food_dist)
             food_progress = int(current_food_dist - next_food_dist)
             turn_change = 1 if self._last_action is not None and int(action) != int(self._last_action) else 0
             key = (
@@ -1291,9 +1494,9 @@ class GameplayController:
                 + float(
                     self._tactic_memory.action_bias(
                         features=self._decision_features(
-                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
-                            food_pressure=self._food_pressure(),
-                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            free_ratio=float(current_free_ratio),
+                            food_pressure=float(current_food_pressure),
+                            no_progress_steps=int(current_no_progress),
                             cycle_repeat=True,
                             imminent_danger=False,
                             proposed_viable=True,
@@ -1366,50 +1569,65 @@ class GameplayController:
         food: tuple[int, int],
         food_weight: float,
         capacity_penalty_scale: float,
+        candidate_analyses: dict[int, _CandidateAnalysis] | None = None,
+        food_pressure: float | None = None,
+        no_progress_steps: int | None = None,
+        free_ratio: float | None = None,
     ) -> int:
         current_food_dist = abs(snake[0][0] - food[0]) + abs(snake[0][1] - food[1])
-        food_pressure = self._food_pressure()
-        visit_counts: dict[tuple[int, int], int] = {}
-        for point in self._recent_heads:
-            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        current_food_pressure = self._food_pressure() if food_pressure is None else float(food_pressure)
+        current_no_progress = int(self._decisions_total - self._dynamic.last_food_step) if no_progress_steps is None else int(no_progress_steps)
+        current_free_ratio = (
+            float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells))
+            if free_ratio is None
+            else float(free_ratio)
+        )
+        analyses = candidate_analyses or self._collect_candidate_analyses(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            food_weight=float(food_weight),
+            capacity_penalty_scale=float(capacity_penalty_scale),
+            food_pressure=float(current_food_pressure),
+        )
         best_action = int(proposed_action)
         best_key: tuple[float, ...] | None = None
         for action in (0, 1, 2):
-            eval_result = self._evaluate_action(
-                board_cells=board_cells,
-                snake=snake,
-                direction=direction,
-                food=food,
-                action=action,
-                food_weight=food_weight,
-                capacity_penalty_scale=capacity_penalty_scale,
-            )
+            analysis = analyses.get(int(action))
+            if analysis is None:
+                analysis = self._analysis_for_action(
+                    board_cells=board_cells,
+                    snake=snake,
+                    direction=direction,
+                    food=food,
+                    action=int(action),
+                    food_weight=float(food_weight),
+                    capacity_penalty_scale=float(capacity_penalty_scale),
+                    food_pressure=float(current_food_pressure),
+                )
+                analyses[int(action)] = analysis
+            eval_result = analysis.eval_result
             if eval_result is None:
                 continue
             score, tail_ok, shortfall = eval_result
-            candidate_head = next_head(snake[0], action_to_direction(direction, int(action)))
-            revisit_count = int(visit_counts.get(candidate_head, 0))
-            next_food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
+            candidate_head = analysis.candidate_head
+            revisit_count = int(analysis.revisit_count)
+            next_food_dist = int(analysis.next_food_dist)
             food_progress = int(current_food_dist - next_food_dist)
-            viable = self._is_eval_viable(
-                board_cells=board_cells,
-                snake_len=len(snake),
-                tail_reachable=bool(tail_ok),
-                capacity_shortfall=int(shortfall),
-                food_pressure=food_pressure,
-            )
+            viable = bool(analysis.viable)
             key = (
                 float(1 if viable else 0),
                 float(1 if candidate_head == food else 0),
-                float(food_progress if food_pressure >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
-                float(score) + (float(food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
-                float(-revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
+                float(food_progress if current_food_pressure >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
+                float(score) + (float(food_progress) * float(current_food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
+                float(-revisit_count) * float(current_food_pressure) * float(self._FOOD_REVISIT_PENALTY),
                 float(
                     self._tactic_memory.action_bias(
                         features=self._decision_features(
-                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
-                            food_pressure=food_pressure,
-                            no_progress_steps=int(self._decisions_total - self._dynamic.last_food_step),
+                            free_ratio=float(current_free_ratio),
+                            food_pressure=float(current_food_pressure),
+                            no_progress_steps=int(current_no_progress),
                             cycle_repeat=False,
                             imminent_danger=False,
                             proposed_viable=bool(viable),
@@ -1433,47 +1651,26 @@ class GameplayController:
         proposed_action: int,
         board_cells: int,
         snake: list[tuple[int, int]],
-        direction: tuple[int, int],
         food: tuple[int, int],
-        food_weight: float,
-        capacity_penalty_scale: float,
-        no_progress_steps: int,
         food_pressure: float,
+        no_progress_steps: int,
+        candidate_analyses: dict[int, _CandidateAnalysis],
     ) -> dict[str, dict[str, object]]:
         board_total = max(1, int(board_cells * board_cells))
-        head = snake[0]
-        current_food_dist = int(abs(head[0] - food[0]) + abs(head[1] - food[1]))
-        visit_counts: dict[tuple[int, int], int] = {}
-        for point in self._recent_heads:
-            visit_counts[point] = int(visit_counts.get(point, 0) + 1)
+        free_ratio = float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells))
         out: dict[str, dict[str, object]] = {}
         for action in (0, 1, 2):
-            cand_dir = action_to_direction(direction, int(action))
-            cand_head = next_head(head, cand_dir)
-            danger = bool(is_danger(board_cells, snake, cand_head))
-            eval_result = self._evaluate_action(
-                board_cells=board_cells,
-                snake=snake,
-                direction=direction,
-                food=food,
-                action=int(action),
-                food_weight=float(food_weight),
-                capacity_penalty_scale=float(capacity_penalty_scale),
-            )
-            reachable_cells = 0
-            if not bool(danger):
-                simulated = simulate_next_snake(snake, cand_head, food)
-                reachable_cells = int(reachable_cell_count(board_cells, simulated, simulated[0]))
-            next_food_dist = int(abs(cand_head[0] - food[0]) + abs(cand_head[1] - food[1]))
-            food_progress = int(current_food_dist - next_food_dist)
-            revisit_count = int(visit_counts.get(cand_head, 0))
+            analysis = candidate_analyses.get(int(action))
+            if analysis is None:
+                continue
+            eval_result = analysis.eval_result
             row: dict[str, object] = {
-                "danger": bool(danger),
-                "reachable_cells": int(reachable_cells),
-                "reachable_ratio": float(float(reachable_cells) / float(board_total)),
-                "next_food_dist": int(next_food_dist),
-                "food_progress": int(food_progress),
-                "revisit_count": int(revisit_count),
+                "danger": bool(analysis.danger),
+                "reachable_cells": int(analysis.reachable_count),
+                "reachable_ratio": float(float(analysis.reachable_count) / float(board_total)),
+                "next_food_dist": int(analysis.next_food_dist),
+                "food_progress": int(analysis.food_progress),
+                "revisit_count": int(analysis.revisit_count),
                 "is_proposed_action": bool(int(action) == int(proposed_action)),
                 "food_pressure": float(food_pressure),
                 "no_progress_steps": int(no_progress_steps),
@@ -1486,22 +1683,15 @@ class GameplayController:
             }
             if eval_result is not None:
                 score, tail_ok, shortfall = eval_result
-                viable = self._is_eval_viable(
-                    board_cells=board_cells,
-                    snake_len=len(snake),
-                    tail_reachable=bool(tail_ok),
-                    capacity_shortfall=int(shortfall),
-                    food_pressure=float(food_pressure),
-                )
                 tactic_bias = float(
                     self._tactic_memory.action_bias(
                         features=self._decision_features(
-                            free_ratio=float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells)),
+                            free_ratio=float(free_ratio),
                             food_pressure=float(food_pressure),
                             no_progress_steps=int(no_progress_steps),
                             cycle_repeat=False,
-                            imminent_danger=bool(danger),
-                            proposed_viable=bool(viable),
+                            imminent_danger=bool(analysis.danger),
+                            proposed_viable=bool(analysis.viable),
                             proposed_eval=eval_result,
                             chosen_eval=eval_result,
                         ),
@@ -1509,13 +1699,15 @@ class GameplayController:
                     )
                 ) if bool(getattr(self._dynamic_cfg, "enable_tactic_memory", False)) else 0.0
                 rank_inputs = {
-                    "viable_bit": int(1 if bool(viable) else 0),
-                    "food_hit_bit": int(1 if cand_head == food else 0),
-                    "food_progress_pressure": float(food_progress if float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0),
-                    "score_blend": float(score) + (float(food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
-                    "revisit_penalty": float(-revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
+                    "viable_bit": int(1 if bool(analysis.viable) else 0),
+                    "food_hit_bit": int(1 if analysis.candidate_head == food else 0),
+                    "food_progress_pressure": float(
+                        analysis.food_progress if float(food_pressure) >= float(self._FOOD_PRESSURE_TRIGGER) else 0.0
+                    ),
+                    "score_blend": float(score) + (float(analysis.food_progress) * float(food_pressure) * float(self._FOOD_PROGRESS_SCORE_WEIGHT)),
+                    "revisit_penalty": float(-analysis.revisit_count) * float(food_pressure) * float(self._FOOD_REVISIT_PENALTY),
                     "tactic_bias": float(tactic_bias),
-                    "neg_next_food_dist": float(-next_food_dist),
+                    "neg_next_food_dist": float(-analysis.next_food_dist),
                     "same_as_proposed_bit": int(1 if int(action) == int(proposed_action) else 0),
                 }
                 row.update(
@@ -1523,12 +1715,197 @@ class GameplayController:
                         "score": float(score),
                         "tail_reachable": bool(tail_ok),
                         "capacity_shortfall": int(shortfall),
-                        "viable": bool(viable),
+                        "viable": bool(analysis.viable),
                         "rank_inputs": rank_inputs,
                     }
                 )
             out[str(int(action))] = row
         return out
+
+    @staticmethod
+    def _candidate_cache_key(
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        action: int,
+        food_weight: float,
+        capacity_penalty_scale: float,
+    ) -> tuple[object, ...]:
+        return (
+            int(board_cells),
+            tuple(snake),
+            tuple(direction),
+            tuple(food),
+            int(action),
+            float(food_weight),
+            float(capacity_penalty_scale),
+        )
+
+    def _collect_candidate_analyses(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+        food_pressure: float,
+        known_danger_by_action: dict[int, bool] | None = None,
+    ) -> dict[int, _CandidateAnalysis]:
+        analyses: dict[int, _CandidateAnalysis] = {}
+        for action in (0, 1, 2):
+            analyses[int(action)] = self._analysis_for_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(action),
+                food_weight=float(food_weight),
+                capacity_penalty_scale=float(capacity_penalty_scale),
+                food_pressure=float(food_pressure),
+                known_danger=None if known_danger_by_action is None else known_danger_by_action.get(int(action)),
+            )
+        return analyses
+
+    def _ensure_safe_candidate_analyses(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        food_weight: float,
+        capacity_penalty_scale: float,
+        food_pressure: float,
+        danger_by_action: dict[int, bool],
+        candidate_analyses: dict[int, _CandidateAnalysis],
+    ) -> None:
+        for action in (0, 1, 2):
+            if bool(danger_by_action.get(int(action), False)):
+                continue
+            analysis = candidate_analyses.get(int(action))
+            if analysis is not None and analysis.eval_result is not None:
+                continue
+            candidate_analyses[int(action)] = self._analysis_for_action(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(action),
+                food_weight=float(food_weight),
+                capacity_penalty_scale=float(capacity_penalty_scale),
+                food_pressure=float(food_pressure),
+            )
+
+    def _analysis_for_action(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        action: int,
+        food_weight: float,
+        capacity_penalty_scale: float,
+        food_pressure: float,
+        known_danger: bool | None = None,
+    ) -> _CandidateAnalysis:
+        key = self._candidate_cache_key(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=action,
+            food_weight=food_weight,
+            capacity_penalty_scale=capacity_penalty_scale,
+        )
+        cached = self._candidate_eval_cache.get(key)
+        if cached is not None:
+            return cached
+        if bool(known_danger):
+            analysis = self._synthesize_candidate_analysis(
+                board_cells=board_cells,
+                snake=snake,
+                direction=direction,
+                food=food,
+                action=int(action),
+                eval_result=None,
+                food_pressure=float(food_pressure),
+                known_danger=True,
+            )
+            self._candidate_eval_cache[key] = analysis
+            return analysis
+        eval_result = self._evaluate_action(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=int(action),
+            food_weight=float(food_weight),
+            capacity_penalty_scale=float(capacity_penalty_scale),
+        )
+        cached = self._candidate_eval_cache.get(key)
+        if cached is not None:
+            return cached
+        return self._synthesize_candidate_analysis(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=int(action),
+            eval_result=eval_result,
+            food_pressure=float(food_pressure),
+            known_danger=bool(eval_result is None),
+        )
+
+    def _synthesize_candidate_analysis(
+        self,
+        *,
+        board_cells: int,
+        snake: list[tuple[int, int]],
+        direction: tuple[int, int],
+        food: tuple[int, int],
+        action: int,
+        eval_result: tuple[float, bool, int] | None,
+        food_pressure: float,
+        known_danger: bool,
+    ) -> _CandidateAnalysis:
+        head = snake[0]
+        candidate_direction = action_to_direction(direction, int(action))
+        candidate_head = next_head(head, candidate_direction)
+        next_food_dist = int(abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1]))
+        current_food_dist = int(abs(head[0] - food[0]) + abs(head[1] - food[1]))
+        revisit_count = int(sum(1 for point in self._recent_heads if point == candidate_head))
+        tail_reachable = bool(eval_result[1]) if eval_result is not None else False
+        capacity_shortfall = int(eval_result[2]) if eval_result is not None else 0
+        viable = bool(
+            eval_result is not None
+            and self._is_eval_viable(
+                board_cells=board_cells,
+                snake_len=len(snake),
+                tail_reachable=tail_reachable,
+                capacity_shortfall=capacity_shortfall,
+                food_pressure=float(food_pressure),
+            )
+        )
+        return _CandidateAnalysis(
+            action=int(action),
+            candidate_head=(int(candidate_head[0]), int(candidate_head[1])),
+            danger=bool(known_danger),
+            simulated_snake=(),
+            reachable_count=0,
+            tail_reachable=bool(tail_reachable),
+            capacity_shortfall=int(capacity_shortfall),
+            next_food_dist=int(next_food_dist),
+            food_progress=int(current_food_dist - next_food_dist),
+            revisit_count=int(revisit_count),
+            score=None if eval_result is None else float(eval_result[0]),
+            eval_result=eval_result,
+            viable=bool(viable),
+        )
 
     def _register_cycle_state(
         self,
@@ -1687,17 +2064,46 @@ class GameplayController:
         food_weight: float,
         capacity_penalty_scale: float,
     ) -> tuple[float, bool, int] | None:
+        key = self._candidate_cache_key(
+            board_cells=board_cells,
+            snake=snake,
+            direction=direction,
+            food=food,
+            action=action,
+            food_weight=food_weight,
+            capacity_penalty_scale=capacity_penalty_scale,
+        )
+        cached = self._candidate_eval_cache.get(key)
+        if cached is not None:
+            return cached.eval_result
         head = snake[0]
         candidate_direction = action_to_direction(direction, int(action))
         candidate_head = next_head(head, candidate_direction)
+        next_food_dist = int(abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1]))
+        current_food_dist = int(abs(head[0] - food[0]) + abs(head[1] - food[1]))
+        revisit_count = int(sum(1 for point in self._recent_heads if point == candidate_head))
         if is_danger(board_cells, snake, candidate_head):
+            self._candidate_eval_cache[key] = _CandidateAnalysis(
+                action=int(action),
+                candidate_head=(int(candidate_head[0]), int(candidate_head[1])),
+                danger=True,
+                simulated_snake=(),
+                reachable_count=0,
+                tail_reachable=False,
+                capacity_shortfall=0,
+                next_food_dist=int(next_food_dist),
+                food_progress=int(current_food_dist - next_food_dist),
+                revisit_count=int(revisit_count),
+                score=None,
+                eval_result=None,
+                viable=False,
+            )
             return None
         simulated_snake = self._simulate_next_snake(snake, candidate_head, food)
         reachable = self._reachable_space(board_cells, simulated_snake, candidate_head)
         tail_reachable = self._tail_is_reachable(board_cells, simulated_snake)
         capacity_shortfall = max(0, len(simulated_snake) - reachable)
-        food_dist = abs(candidate_head[0] - food[0]) + abs(candidate_head[1] - food[1])
-        score = float(reachable) - (float(food_weight) * float(food_dist))
+        score = float(reachable) - (float(food_weight) * float(next_food_dist))
         board_total = max(1, int(board_cells * board_cells))
         length_ratio = float(len(simulated_snake)) / float(board_total)
         food_pressure = self._food_pressure()
@@ -1723,7 +2129,31 @@ class GameplayController:
             depth=depth,
         )
         score += float(getattr(self._dynamic_cfg, "lookahead_weight", 0.0)) * float(lookahead)
-        return float(score), bool(tail_reachable), int(capacity_shortfall)
+        eval_result = (float(score), bool(tail_reachable), int(capacity_shortfall))
+        self._candidate_eval_cache[key] = _CandidateAnalysis(
+            action=int(action),
+            candidate_head=(int(candidate_head[0]), int(candidate_head[1])),
+            danger=False,
+            simulated_snake=tuple(simulated_snake),
+            reachable_count=int(reachable),
+            tail_reachable=bool(tail_reachable),
+            capacity_shortfall=int(capacity_shortfall),
+            next_food_dist=int(next_food_dist),
+            food_progress=int(current_food_dist - next_food_dist),
+            revisit_count=int(revisit_count),
+            score=float(score),
+            eval_result=eval_result,
+            viable=bool(
+                self._is_eval_viable(
+                    board_cells=board_cells,
+                    snake_len=len(snake),
+                    tail_reachable=bool(tail_reachable),
+                    capacity_shortfall=int(capacity_shortfall),
+                    food_pressure=float(food_pressure),
+                )
+            ),
+        )
+        return eval_result
 
     def _food_pressure(self, *, no_progress_steps: int | None = None) -> float:
         starvation_pressure = self._starvation_progress_ratio()
@@ -1834,6 +2264,7 @@ class GameplayController:
         chosen_action: int,
         action_probs: tuple[float, float, float] | None,
         include_reachable_cells: bool,
+        candidate_analyses: dict[int, _CandidateAnalysis] | None = None,
     ) -> None:
         board_cells = int(self.settings.board_cells)
         snake = list(self.game.snake)
@@ -1841,21 +2272,27 @@ class GameplayController:
         food = tuple(self.game.food)
         head = snake[0]
         total = float(board_cells * board_cells)
+        analyses = candidate_analyses or {}
         candidates: list[CandidateDebug] = []
         for action in (0, 1, 2):
+            analysis = analyses.get(int(action))
             candidate_direction = action_to_direction(direction, action)
-            candidate_head = next_head(head, candidate_direction)
-            danger = bool(is_danger(board_cells, snake, candidate_head))
+            candidate_head = analysis.candidate_head if analysis is not None else next_head(head, candidate_direction)
+            danger = bool(analysis.danger) if analysis is not None else bool(is_danger(board_cells, snake, candidate_head))
             reachable_ratio = 0.0
             reachable_cells: tuple[tuple[int, int], ...] = ()
             if not danger:
-                simulated = self._simulate_next_snake(snake, candidate_head, food)
+                simulated = list(analysis.simulated_snake) if analysis is not None and analysis.simulated_snake else self._simulate_next_snake(snake, candidate_head, food)
                 if include_reachable_cells:
                     reachable = self._reachable_cells(board_cells, simulated, candidate_head)
                     reachable_ratio = float(len(reachable)) / total
                     reachable_cells = tuple(sorted(reachable))
                 else:
-                    reachable_count = self._reachable_space(board_cells, simulated, candidate_head)
+                    reachable_count = (
+                        int(analysis.reachable_count)
+                        if analysis is not None and int(analysis.reachable_count) > 0
+                        else self._reachable_space(board_cells, simulated, candidate_head)
+                    )
                     reachable_ratio = float(reachable_count) / total
             candidates.append(
                 CandidateDebug(
@@ -1950,6 +2387,44 @@ class GameplayController:
         )
 
     def decision_trace_snapshot(self) -> dict[str, object]:
+        action_eval_tuples = {str(k): dict(v) for k, v in self._last_action_eval_tuples.items()}
+        if self._last_trace_inputs is not None:
+            trace_inputs = self._last_trace_inputs
+            candidate_analyses = {int(action): analysis for action, analysis in trace_inputs.candidate_analyses}
+            if len(candidate_analyses) < 3:
+                board_cells = int(trace_inputs.board_cells)
+                snake = list(trace_inputs.snake)
+                direction = tuple(trace_inputs.direction)
+                food = tuple(trace_inputs.food)
+                free_ratio = float(max(0, board_cells * board_cells - len(snake))) / float(max(1, board_cells * board_cells))
+                crowded = bool(self._space_strategy_enabled and free_ratio <= float(self._CROWDED_FREE_RATIO_THRESHOLD))
+                food_weight = float(
+                    self._FOOD_DIST_WEIGHT_CROWDED
+                    if crowded
+                    else (self._FOOD_DIST_WEIGHT_OPEN if self._space_strategy_enabled else self._FOOD_DIST_WEIGHT)
+                )
+                capacity_penalty_scale = float(self._CROWDED_CAPACITY_PENALTY_SCALE) if crowded else 1.0
+                for action in (0, 1, 2):
+                    if int(action) not in candidate_analyses:
+                        candidate_analyses[int(action)] = self._analysis_for_action(
+                            board_cells=board_cells,
+                            snake=snake,
+                            direction=direction,
+                            food=food,
+                            action=int(action),
+                            food_weight=float(food_weight),
+                            capacity_penalty_scale=float(capacity_penalty_scale),
+                            food_pressure=float(trace_inputs.food_pressure),
+                        )
+            action_eval_tuples = self._build_runtime_action_eval_tuples(
+                proposed_action=int(trace_inputs.proposed_action),
+                board_cells=int(trace_inputs.board_cells),
+                snake=list(trace_inputs.snake),
+                food=tuple(trace_inputs.food),
+                food_pressure=float(trace_inputs.food_pressure),
+                no_progress_steps=int(trace_inputs.no_progress_steps),
+                candidate_analyses=candidate_analyses,
+            )
         no_progress_steps = int(max(0, self._decisions_total - self._dynamic.last_food_step))
         starvation_steps = int(getattr(self.game, "steps_without_food", 0))
         starvation_limit = int(getattr(self.game, "starvation_limit", lambda: 0)())
@@ -1991,7 +2466,7 @@ class GameplayController:
             "pre_no_exit_guard_near_no_exit_signal": bool(self._last_pre_no_exit_guard_near_no_exit_signal),
             "no_exit_state": bool(self._last_no_exit_state),
             "entered_no_exit_this_step": bool(self._last_entered_no_exit_this_step),
-            "action_eval_tuples": {str(k): dict(v) for k, v in self._last_action_eval_tuples.items()},
+            "action_eval_tuples": action_eval_tuples,
             "no_progress_steps": int(no_progress_steps),
             "starvation_steps": int(starvation_steps),
             "starvation_limit": int(starvation_limit),

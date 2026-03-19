@@ -182,6 +182,7 @@ class TestAppActions(unittest.TestCase):
             app_state = AppState(
                 game_running=True,
                 space_strategy_enabled=False,
+                tail_trend_enabled=False,
                 debug_overlay=True,
                 debug_reachable_overlay=True,
                 training_episode_scores=[3, 7, 9],
@@ -210,12 +211,15 @@ class TestAppActions(unittest.TestCase):
             actions.handle_save_clicked()
             self.assertTrue(state_file.exists())
             self.assertTrue(agent.save_called)
-            self.assertIn('"themeName"', state_file.read_text(encoding="utf-8"))
+            saved_text = state_file.read_text(encoding="utf-8")
+            self.assertIn('"themeName"', saved_text)
+            self.assertIn('"tailTrendEnabled": false', saved_text)
 
             game.episode_scores = []
             app_state.game_running = False
             generations.value = "1"
             app_state.space_strategy_enabled = True
+            app_state.tail_trend_enabled = True
             app_state.debug_overlay = False
             app_state.debug_reachable_overlay = False
             app_state.training_episode_scores = []
@@ -232,6 +236,7 @@ class TestAppActions(unittest.TestCase):
             self.assertEqual(generations.value, "999")
             self.assertTrue(app_state.game_running)
             self.assertFalse(app_state.space_strategy_enabled)
+            self.assertFalse(app_state.tail_trend_enabled)
             self.assertTrue(app_state.debug_overlay)
             self.assertTrue(app_state.debug_reachable_overlay)
             self.assertFalse(agent.adaptive_reward_enabled)

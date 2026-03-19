@@ -183,6 +183,45 @@ class TestHoldoutEval(unittest.TestCase):
             self.assertTrue(_FakeGameplayController.instances)
             self.assertIn(False, _FakeGameplayController.instances[0].learning_flags)
 
+    def test_controller_eval_does_not_pass_artifact_dir(self) -> None:
+        captured_artifact_dirs: list[object] = []
+
+        class _FakeGameplayController:
+            def __init__(self, *args, **kwargs) -> None:
+                captured_artifact_dirs.append(kwargs.get("artifact_dir"))
+
+            def set_learning_enabled(self, enabled: bool) -> None:
+                _ = enabled
+
+            def set_debug_options(self, *, debug_overlay: bool, reachable_overlay: bool) -> None:
+                _ = (debug_overlay, reachable_overlay)
+
+            def _apply_agent_control(self) -> None:
+                return
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "snake_frame.holdout_eval.GameplayController",
+            _FakeGameplayController,
+        ):
+            ctl = HoldoutEvalController(
+                agent=_FakeAgent(),
+                settings=Settings(),
+                obs_config=ObsConfig(use_extended_features=True, use_path_features=True, use_tail_path_features=True),
+                reward_config=RewardConfig(),
+                out_dir=Path(tmpdir),
+            )
+            self.assertTrue(
+                ctl.start(
+                    mode=HoldoutEvalController.MODE_CONTROLLER_ON,
+                    seeds=[17001],
+                    max_steps=1,
+                    model_selector="best",
+                )
+            )
+            msg = self._wait(ctl)
+            self.assertIsNotNone(msg)
+            self.assertEqual(captured_artifact_dirs, [None])
+
     def test_training_active_does_not_start_or_reload_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = _FakeAgent()

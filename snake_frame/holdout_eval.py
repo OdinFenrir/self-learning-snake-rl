@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import tempfile
 import threading
 from typing import Iterable
 
@@ -77,6 +79,7 @@ class HoldoutEvalController:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._done_event = threading.Event()
+        self._stop_event = threading.Event()
         self._active = False
         self._mode = self.MODE_PPO_ONLY
         self._completed = 0
@@ -135,6 +138,7 @@ class HoldoutEvalController:
             self._last_error = None
             self._completion_message = None
             self._done_event.clear()
+            self._stop_event.clear()
         t = threading.Thread(
             target=self._worker,
             kwargs={
@@ -162,9 +166,10 @@ class HoldoutEvalController:
             return msg
 
     def close(self) -> None:
+        self._stop_event.set()
         thread = self._thread
         if thread is not None:
-            thread.join(timeout=0.5)
+            thread.join(timeout=3.0)
 
     def _worker(
         self,
@@ -189,6 +194,8 @@ class HoldoutEvalController:
             if mode == self.MODE_PPO_ONLY:
                 rows = []
                 for idx, seed in enumerate(seeds):
+                    if self._stop_event.is_set():
+                        return
                     score_list = list(
                         int(v)
                         for v in self.agent.evaluate_holdout(
@@ -209,6 +216,8 @@ class HoldoutEvalController:
                     trace_enabled=bool(trace_enabled),
                     trace_tag=str(trace_tag),
                 )
+            if self._stop_event.is_set():
+                return
             scores = [int(r["score"]) for r in rows]
             summary = {
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -227,8 +236,8 @@ class HoldoutEvalController:
             latest = self.out_dir / "latest_summary.json"
             stamped = self.out_dir / f"summary_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
             payload = json.dumps(summary, indent=2, allow_nan=False)
-            latest.write_text(payload, encoding="utf-8")
-            stamped.write_text(payload, encoding="utf-8")
+            self._write_text_atomic(latest, payload)
+            self._write_text_atomic(stamped, payload)
             with self._lock:
                 self._latest_summary_path = str(latest)
                 self._completion_message = (
@@ -279,6 +288,29 @@ class HoldoutEvalController:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, allow_nan=False))
             f.write("\n")
+
+    @staticmethod
+    def _write_text_atomic(path: Path, payload: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_name: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                prefix=f"{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_file.write(payload)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+                temp_name = temp_file.name
+            os.replace(temp_name, path)
+            temp_name = None
+        finally:
+            if temp_name is not None:
+                Path(temp_name).unlink(missing_ok=True)
 
     @staticmethod
     def _annotate_no_exit_timing(rows: list[dict[str, object]]) -> None:
@@ -350,6 +382,8 @@ class HoldoutEvalController:
             dynamic_control=self.settings.dynamic_control,
         )
         for idx, seed in enumerate(seeds):
+            if self._stop_event.is_set():
+                return rows, telemetry_rows
             game = SnakeGame(base, starvation_factor=int(self.reward_config.board_starvation_factor))
             game.rng.seed(int(seed))
             game.reset()
@@ -359,7 +393,7 @@ class HoldoutEvalController:
                 settings=base,
                 obs_config=self.obs_config,
                 space_strategy_enabled=True,
-                artifact_dir=Path(getattr(self.agent, "artifact_dir", self.out_dir)),
+                artifact_dir=None,
             )
             gameplay.set_learning_enabled(False)
             if bool(trace_enabled):
@@ -367,6 +401,8 @@ class HoldoutEvalController:
             seed_trace_path = (trace_root / f"seed_{int(seed)}.jsonl") if trace_root is not None else None
             seed_trace_rows: list[dict[str, object]] = []
             for step_idx in range(int(max_steps)):
+                if self._stop_event.is_set():
+                    return rows, telemetry_rows
                 if bool(game.game_over):
                     break
                 score_before = int(getattr(game, "score", 0))

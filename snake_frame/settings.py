@@ -18,7 +18,7 @@ class PpoConfig:
     target_kl: float | None = 0.015
     ent_coef_start: float = 0.01
     ent_coef_end: float = 0.0008
-    policy_net_arch: tuple[int, int] = (256, 256)
+    policy_net_arch: tuple[int, ...] = (256, 256)  # Reduced for faster iteration and lower variance in short-run experiments.
     policy_net_arch_pi: tuple[int, ...] | None = None
     policy_net_arch_vf: tuple[int, ...] | None = None
     seed: int | None = None
@@ -121,6 +121,11 @@ class DynamicControlConfig:
     tactic_memory_max_clusters: int = 96
     tactic_memory_merge_radius: float = 0.18
     tactic_memory_weight: float = 120.0
+    tactic_memory_adaptive_merge: bool = False
+    tactic_memory_merge_radius_crowded: float = 0.22
+    tactic_memory_merge_radius_open: float = 0.14
+    tactic_memory_merge_ratio_low: float = 0.35
+    tactic_memory_merge_ratio_high: float = 0.65
     lookahead_depth: int = 3
     lookahead_weight: float = 220.0
 

@@ -14,6 +14,34 @@ class TacticCluster:
     samples: int = 0
 
 
+def compute_effective_merge_radius(
+    *,
+    adaptive: bool,
+    fixed_radius: float,
+    crowded_radius: float,
+    open_radius: float,
+    low_threshold: float,
+    high_threshold: float,
+    free_ratio: float | None,
+) -> float:
+    if not adaptive:
+        return fixed_radius
+    if free_ratio is None:
+        return fixed_radius
+    if high_threshold <= low_threshold:
+        return fixed_radius
+
+    fr = float(max(0.0, min(1.0, free_ratio)))
+
+    if fr <= low_threshold:
+        return crowded_radius
+    if fr >= high_threshold:
+        return open_radius
+
+    t = (fr - low_threshold) / (high_threshold - low_threshold)
+    return float(crowded_radius + t * (open_radius - crowded_radius))
+
+
 class TacticMemoryBank:
     def __init__(
         self,
@@ -22,11 +50,21 @@ class TacticMemoryBank:
         max_clusters: int = 96,
         merge_radius: float = 0.18,
         memory_weight: float = 120.0,
+        adaptive_merge: bool = False,
+        crowded_radius: float = 0.22,
+        open_radius: float = 0.14,
+        low_threshold: float = 0.35,
+        high_threshold: float = 0.65,
     ) -> None:
         self.dim = int(dim)
         self.max_clusters = int(max_clusters)
         self.merge_radius = float(merge_radius)
         self.memory_weight = float(memory_weight)
+        self._adaptive_merge = bool(adaptive_merge)
+        self._crowded_radius = float(crowded_radius)
+        self._open_radius = float(open_radius)
+        self._low_threshold = float(low_threshold)
+        self._high_threshold = float(high_threshold)
         self.clusters: list[TacticCluster] = []
 
     def _distance(self, a: list[float], b: list[float]) -> float:
@@ -50,7 +88,15 @@ class TacticMemoryBank:
                 best_idx = int(i)
         return best_idx
 
-    def record(self, *, features: list[float], action: int, success: bool, weight: float = 1.0) -> None:
+    def record(
+        self,
+        *,
+        features: list[float],
+        action: int,
+        success: bool,
+        weight: float = 1.0,
+        free_ratio: float | None = None,
+    ) -> None:
         if len(features) != self.dim:
             return
         act = int(max(0, min(2, int(action))))
@@ -67,7 +113,19 @@ class TacticMemoryBank:
             idx = 0
         else:
             d = self._distance(features, self.clusters[idx].center)
-            if d > float(self.merge_radius) and len(self.clusters) < int(self.max_clusters):
+            effective_free_ratio = free_ratio if free_ratio is not None else (features[0] if features else None)
+
+            effective_radius = compute_effective_merge_radius(
+                adaptive=self._adaptive_merge,
+                fixed_radius=self.merge_radius,
+                crowded_radius=self._crowded_radius,
+                open_radius=self._open_radius,
+                low_threshold=self._low_threshold,
+                high_threshold=self._high_threshold,
+                free_ratio=effective_free_ratio,
+            )
+
+            if d > effective_radius and len(self.clusters) < int(self.max_clusters):
                 self.clusters.append(
                     TacticCluster(
                         center=[float(v) for v in features],
@@ -105,6 +163,11 @@ class TacticMemoryBank:
             "max_clusters": int(self.max_clusters),
             "merge_radius": float(self.merge_radius),
             "memory_weight": float(self.memory_weight),
+            "adaptive_merge": bool(self._adaptive_merge),
+            "crowded_radius": float(self._crowded_radius),
+            "open_radius": float(self._open_radius),
+            "low_threshold": float(self._low_threshold),
+            "high_threshold": float(self._high_threshold),
             "clusters": [
                 {
                     "center": [float(v) for v in c.center],
@@ -130,6 +193,11 @@ class TacticMemoryBank:
                 max_clusters=int(payload.get("max_clusters", 96)),
                 merge_radius=float(payload.get("merge_radius", 0.18)),
                 memory_weight=float(payload.get("memory_weight", 120.0)),
+                adaptive_merge=bool(payload.get("adaptive_merge", False)),
+                crowded_radius=float(payload.get("crowded_radius", 0.22)),
+                open_radius=float(payload.get("open_radius", 0.14)),
+                low_threshold=float(payload.get("low_threshold", 0.35)),
+                high_threshold=float(payload.get("high_threshold", 0.65)),
             )
             rows = list(payload.get("clusters", []))
             for row in rows:
@@ -153,4 +221,3 @@ class TacticMemoryBank:
             return bank
         except Exception:
             return cls(dim=int(fallback_dim))
-

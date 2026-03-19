@@ -116,6 +116,7 @@ class SnakeFrameApp:
             space_strategy_enabled=self.app_state.space_strategy_enabled,
             artifact_dir=runtime.state_file.parent / "ppo" / runtime.experiment_name,
         )
+        self.gameplay.set_tail_trend_enabled(bool(getattr(self.app_state, "tail_trend_enabled", True)))
         self._build_controls()
         self.actions = AppActions(
             app_state=self.app_state,
@@ -251,6 +252,7 @@ class SnakeFrameApp:
         current = getattr(self.app_state, 'tail_trend_enabled', True)
         new_state = not current
         self.app_state.tail_trend_enabled = bool(new_state)
+        self.gameplay.set_tail_trend_enabled(bool(new_state))
         state = "ON" if new_state else "OFF"
         self.actions.set_status(f"Tail trend features {state}")
 

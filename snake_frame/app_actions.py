@@ -208,6 +208,7 @@ class AppActions:
             "trainingCurrent": int(snap.current_steps),
             "gameRunning": bool(self.app_state.game_running),
             "spaceStrategyEnabled": bool(self.app_state.space_strategy_enabled),
+            "tailTrendEnabled": bool(getattr(self.app_state, "tail_trend_enabled", True)),
             "debugOverlay": bool(self.app_state.debug_overlay),
             "debugReachableOverlay": bool(self.app_state.debug_reachable_overlay),
             "snakeStyle": str(getattr(self.game, "snake_style", getattr(self.app_state, "snake_style", "topdown_3d"))),
@@ -340,6 +341,9 @@ class AppActions:
         self.app_state.game_running = bool(payload.get("gameRunning", False))
         self.app_state.space_strategy_enabled = bool(
             payload.get("spaceStrategyEnabled", self.app_state.space_strategy_enabled)
+        )
+        self.app_state.tail_trend_enabled = bool(
+            payload.get("tailTrendEnabled", getattr(self.app_state, "tail_trend_enabled", True))
         )
         self.app_state.debug_overlay = bool(payload.get("debugOverlay", self.app_state.debug_overlay))
         self.app_state.debug_reachable_overlay = bool(

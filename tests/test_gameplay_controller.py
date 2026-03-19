@@ -583,6 +583,57 @@ class TestGameplayController(unittest.TestCase):
         self.assertTrue(safe_mock.called)
         space_fill_mock.assert_not_called()
 
+    def test_food_pressure_does_not_bypass_when_only_one_safe_option(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 720
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 160
+        ctrl._dynamic.last_food_step = 0
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, True, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_best_safe_action", return_value=2) as safe_mock,
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=1) as space_fill_mock,
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 1)
+        self.assertFalse(safe_mock.called)
+        space_fill_mock.assert_called_once()
+
+    def test_food_pressure_does_not_bypass_when_no_exit_trend_is_active(self) -> None:
+        game = _FakeGame()
+        game.steps_without_food = 720
+        agent = _FakeAgent()
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(agent_safety_override=True),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 160
+        ctrl._dynamic.last_food_step = 0
+        ctrl._last_no_exit_state = True
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, False, False]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.SPACE_FILL),
+            patch.object(ctrl, "_evaluate_action", return_value=(10.0, True, 0)),
+            patch.object(ctrl, "_best_safe_action", return_value=2) as safe_mock,
+            patch.object(ctrl._space_fill_controller, "choose_action", return_value=1) as space_fill_mock,
+        ):
+            action = ctrl._choose_safe_action(0)
+        self.assertEqual(action, 1)
+        self.assertFalse(safe_mock.called)
+        space_fill_mock.assert_called_once()
+
     def test_best_safe_action_prioritizes_food_progress_under_pressure(self) -> None:
         game = _FakeGame()
         game.steps_without_food = 720
@@ -761,6 +812,116 @@ class TestGameplayController(unittest.TestCase):
             action = ctrl._choose_safe_action(0)
         self.assertEqual(int(action), 0)
         self.assertEqual(str(ctrl.last_mode_switch_reason()), "ppo_tolerate_low_risk")
+
+    def test_no_exit_state_is_computed_without_debug_overlays(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(enable_learned_arbiter=False),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, True, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(100.0, False, 2)),
+        ):
+            _ = ctrl._choose_safe_action(0)
+        row = ctrl.decision_trace_snapshot()
+        self.assertTrue(bool(row.get("no_exit_state")))
+        self.assertIn("0", dict(row.get("action_eval_tuples") or {}))
+
+    def test_no_exit_state_stays_false_when_proposed_action_is_danger_but_safe_alt_exists(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(enable_learned_arbiter=False),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[True, False, True]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", side_effect=[None, (100.0, True, 0)]),
+        ):
+            action = ctrl._choose_safe_action(0)
+        row = ctrl.decision_trace_snapshot()
+        self.assertEqual(int(action), 1)
+        self.assertFalse(bool(row.get("no_exit_state")))
+
+    def test_action_eval_tuples_include_all_actions_without_debug_overlays(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(enable_learned_arbiter=False),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, False, False]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(100.0, True, 0)),
+        ):
+            _ = ctrl._choose_safe_action(0)
+        row = ctrl.decision_trace_snapshot()
+        self.assertEqual(set((row.get("action_eval_tuples") or {}).keys()), {"0", "1", "2"})
+
+    def test_decision_trace_snapshot_uses_frozen_decision_state(self) -> None:
+        game = _FakeGame()
+        agent = _FakeAgent()
+        agent.is_ready = True
+        agent.is_inference_available = True
+        ctrl = GameplayController(
+            game=game,
+            agent=agent,
+            settings=Settings(
+                agent_safety_override=True,
+                dynamic_control=DynamicControlConfig(enable_learned_arbiter=False),
+            ),
+            obs_config=ObsConfig(use_extended_features=True, use_path_features=True),
+        )
+        ctrl._decisions_total = 300
+        ctrl._dynamic.last_food_step = 300
+        with (
+            patch("snake_frame.gameplay_controller.is_danger", side_effect=[False, False, False]),
+            patch.object(ctrl, "_register_cycle_state", return_value=False),
+            patch.object(ctrl, "_select_mode", return_value=ControlMode.PPO),
+            patch.object(ctrl, "_evaluate_action", return_value=(100.0, True, 0)),
+        ):
+            _ = ctrl._choose_safe_action(0)
+        game.snake = [(1, 1), (1, 2), (1, 3)]
+        game.direction = (0, 1)
+        game.food = (2, 2)
+        row = ctrl.decision_trace_snapshot()
+        self.assertEqual(set((row.get("action_eval_tuples") or {}).keys()), {"0", "1", "2"})
+        self.assertEqual(int(row["action_eval_tuples"]["0"]["next_food_dist"]), 3)
 
     def test_pre_no_exit_guard_overrides_low_risk_tolerate_path_when_structurally_safer_alt_exists(self) -> None:
         game = _FakeGame()
