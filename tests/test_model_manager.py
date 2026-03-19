@@ -48,6 +48,8 @@ def test_promote_to_baseline_archives_existing_baseline_and_moves_source() -> No
         assert "state/ppo/baseline/metadata.json" in names
         assert "artifacts/training_input/training_input_latest.json" in names
         assert "artifacts/phase3_compare/model_agent_compare_latest.json" not in names
+        # Promote invalidates managed artifacts to prevent stale report context.
+        assert not (artifacts_root / "training_input").exists()
 
 
 def test_delete_model_removes_directory_tree() -> None:
@@ -112,6 +114,31 @@ def test_recover_baseline_workspace_restores_managed_artifacts() -> None:
         # Compare artifacts are intentionally excluded from snapshot restore.
         still_compare = (artifacts_root / "phase3_compare" / "model_agent_compare_latest.md").read_text(encoding="utf-8")
         assert still_compare == "newer-compare"
+
+
+def test_recover_failure_does_not_mutate_live_baseline_or_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_root = Path(tmp) / "state"
+        artifacts_root = Path(tmp) / "artifacts"
+        baseline = state_root / "ppo" / "baseline"
+        archives = state_root / "ppo" / "_archives"
+        _write_file(baseline / "metadata.json", json.dumps({"name": "live-baseline"}))
+        _write_file(artifacts_root / "training_input" / "training_input_latest.md", "live-report")
+        archives.mkdir(parents=True, exist_ok=True)
+        bad_archive = archives / "baseline_archive_bad.zip"
+        import zipfile
+
+        with zipfile.ZipFile(bad_archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("meta/manifest.json", json.dumps({"operation": "archive_baseline", "source_model": "baseline", "entries": [], "summary": {}}))
+            # Path traversal should be rejected before any live mutation.
+            zf.writestr("state/ppo/baseline/../../outside.txt", "bad")
+
+        result = recover_baseline(state_root, bad_archive, include_artifacts=True)
+
+        assert not result.ok
+        payload = json.loads((baseline / "metadata.json").read_text(encoding="utf-8"))
+        assert payload["name"] == "live-baseline"
+        assert (artifacts_root / "training_input" / "training_input_latest.md").read_text(encoding="utf-8") == "live-report"
 
 
 def test_list_models_excludes_internal_dirs() -> None:

@@ -93,6 +93,8 @@ def promote_to_baseline(state_root: Path, source_model: str) -> ModelManagerResu
         if baseline_dir.exists():
             shutil.rmtree(baseline_dir)
         source_dir.replace(baseline_dir)
+        # New baseline should start with fresh derived reports/visuals.
+        _clear_managed_artifacts(state_root)
     except OSError as exc:
         return ModelManagerResult(ok=False, message=f"Promote failed: {exc}", archive_path=archive_path)
 
@@ -149,13 +151,12 @@ def recover_baseline(state_root: Path, archive_zip: Path, *, include_artifacts: 
 
     baseline_dir = ppo_root / _BASELINE
     current_archive = _archive_baseline_if_present(state_root, include_artifacts=bool(include_artifacts))
+    temp_root = ppo_root / f"_recover_tmp_{uuid.uuid4().hex[:10]}"
+    temp_baseline = temp_root / "state" / "ppo" / _BASELINE
+    temp_artifacts = temp_root / "artifacts"
+    project_root = _project_root_from_state(state_root)
     try:
-        if baseline_dir.exists():
-            shutil.rmtree(baseline_dir)
-        baseline_dir.mkdir(parents=True, exist_ok=True)
-        if include_artifacts:
-            _clear_managed_artifacts(state_root)
-        project_root = _project_root_from_state(state_root)
+        temp_baseline.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive_path, "r") as zf:
             for name in zf.namelist():
                 if not name or name.endswith("/"):
@@ -164,22 +165,40 @@ def recover_baseline(state_root: Path, archive_zip: Path, *, include_artifacts: 
                     continue
                 if name.startswith("state/ppo/baseline/"):
                     rel = name[len("state/ppo/baseline/") :]
-                    target = baseline_dir / rel
+                    target = _safe_extract_target(temp_baseline, rel)
                 elif name.startswith("artifacts/"):
                     if not include_artifacts:
                         continue
                     artifact_rel = name[len("artifacts/") :]
                     if not _artifact_rel_is_managed(artifact_rel):
                         continue
-                    target = project_root / name
+                    target = _safe_extract_target(temp_artifacts, artifact_rel)
                 else:
                     # Backward compatibility with legacy archives that only stored baseline files.
-                    target = baseline_dir / name
+                    target = _safe_extract_target(temp_baseline, name)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(name, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
+        if baseline_dir.exists():
+            shutil.rmtree(baseline_dir)
+        temp_baseline.replace(baseline_dir)
+        if include_artifacts:
+            _clear_managed_artifacts(state_root)
+            for sub in _MANAGED_ARTIFACT_SUBDIRS:
+                src = temp_artifacts / sub
+                if not src.exists():
+                    continue
+                dst = project_root / "artifacts" / sub
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                src.replace(dst)
     except Exception as exc:
         return ModelManagerResult(ok=False, message=f"Recover failed: {exc}", archive_path=current_archive)
+    finally:
+        try:
+            if temp_root.exists():
+                shutil.rmtree(temp_root)
+        except OSError:
+            pass
 
     suffix = f" (current baseline archived: {current_archive.name})" if current_archive else ""
     return ModelManagerResult(
@@ -313,3 +332,16 @@ def _artifact_rel_is_managed(artifact_rel: str) -> bool:
         return False
     head = rel.split("/", 1)[0]
     return head in _MANAGED_ARTIFACT_SUBDIRS
+
+
+def _safe_extract_target(base: Path, rel: str) -> Path:
+    rel_norm = str(rel or "").replace("\\", "/").strip("/")
+    if not rel_norm:
+        raise ValueError("empty archive entry path")
+    if rel_norm in (".", ".."):
+        raise ValueError(f"invalid archive entry path: {rel_norm}")
+    candidate = (base / rel_norm).resolve()
+    base_resolved = base.resolve()
+    if candidate == base_resolved or base_resolved not in candidate.parents:
+        raise ValueError(f"archive entry escapes target root: {rel_norm}")
+    return candidate
