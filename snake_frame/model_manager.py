@@ -21,6 +21,17 @@ class ModelManagerResult:
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _INTERNAL_PREFIX = "_"
 _BASELINE = "baseline"
+_MANAGED_ARTIFACT_SUBDIRS = (
+    "training_input",
+    "agent_performance",
+    "phase3_compare",
+    "model_agent_compare",
+    "live_eval",
+    "share",
+    "reports",
+    "visuals",
+    "netron",
+)
 
 
 def sanitize_model_name(name: str) -> str:
@@ -115,6 +126,8 @@ def delete_model(
         return ModelManagerResult(ok=False, message=f"Model not found: {name}")
     try:
         shutil.rmtree(model_dir)
+        if name == _BASELINE and bool(allow_delete_baseline):
+            _clear_managed_artifacts(state_root)
     except OSError as exc:
         return ModelManagerResult(ok=False, message=f"Delete failed: {exc}")
     return ModelManagerResult(ok=True, message=f"Deleted model: {name}")
@@ -142,13 +155,22 @@ def recover_baseline(state_root: Path, archive_zip: Path) -> ModelManagerResult:
         if baseline_dir.exists():
             shutil.rmtree(baseline_dir)
         baseline_dir.mkdir(parents=True, exist_ok=True)
+        _clear_managed_artifacts(state_root)
+        project_root = _project_root_from_state(state_root)
         with zipfile.ZipFile(archive_path, "r") as zf:
             for name in zf.namelist():
                 if not name or name.endswith("/"):
                     continue
                 if name.startswith("meta/"):
                     continue
-                target = baseline_dir / name
+                if name.startswith("state/ppo/baseline/"):
+                    rel = name[len("state/ppo/baseline/") :]
+                    target = baseline_dir / rel
+                elif name.startswith("artifacts/"):
+                    target = project_root / name
+                else:
+                    # Backward compatibility with legacy archives that only stored baseline files.
+                    target = baseline_dir / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(name, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
@@ -192,10 +214,7 @@ def _archive_baseline_if_present(state_root: Path) -> Path | None:
     total_size = 0
     file_count = 0
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for child in sorted(baseline_dir.rglob("*")):
-            if not child.is_file():
-                continue
-            rel = child.relative_to(baseline_dir).as_posix()
+        for child, rel in _iter_archive_sources(state_root):
             blob = child.read_bytes()
             sha = hashlib.sha256(blob).hexdigest()
             zf.write(child, arcname=rel)
@@ -239,3 +258,42 @@ def _validate_baseline_archive_manifest(archive_path: Path) -> tuple[bool, str]:
     if not isinstance(summary, dict):
         return False, "summary must be present"
     return True, ""
+
+
+def _project_root_from_state(state_root: Path) -> Path:
+    return state_root.resolve().parent
+
+
+def _managed_artifact_roots(state_root: Path) -> list[Path]:
+    project_root = _project_root_from_state(state_root)
+    artifacts_root = project_root / "artifacts"
+    return [artifacts_root / sub for sub in _MANAGED_ARTIFACT_SUBDIRS]
+
+
+def _iter_archive_sources(state_root: Path) -> list[tuple[Path, str]]:
+    ppo_root = state_root / "ppo"
+    baseline_dir = ppo_root / _BASELINE
+    out: list[tuple[Path, str]] = []
+    for child in sorted(baseline_dir.rglob("*")):
+        if child.is_file():
+            rel = f"state/ppo/{_BASELINE}/{child.relative_to(baseline_dir).as_posix()}"
+            out.append((child, rel))
+    for root in _managed_artifact_roots(state_root):
+        if not root.exists() or not root.is_dir():
+            continue
+        for child in sorted(root.rglob("*")):
+            if not child.is_file():
+                continue
+            rel = f"artifacts/{child.relative_to(root.parent).as_posix()}"
+            out.append((child, rel))
+    return out
+
+
+def _clear_managed_artifacts(state_root: Path) -> None:
+    for root in _managed_artifact_roots(state_root):
+        try:
+            if root.exists() and root.is_dir():
+                shutil.rmtree(root)
+        except OSError:
+            # Ignore cleanup failure to avoid blocking critical model operations.
+            continue
