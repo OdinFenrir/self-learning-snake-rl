@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+import time
 from typing import Literal
 import webbrowser
 
@@ -12,10 +13,17 @@ import pygame
 from .analysis_tool_catalog import ToolSpec, build_tools
 from .analysis_tool_commands import build_tool_commands, list_experiments, project_root
 from .analysis_tool_runner import pick_first_existing_output, read_output_preview, run_commands
+from .model_manager import (
+    delete_model,
+    list_archives,
+    list_models,
+    promote_to_baseline,
+    recover_baseline,
+)
 from .theme import get_theme, normalize_theme_name
 
 WelcomeRoute = Literal["live_training", "settings"]
-ScreenState = Literal["menu", "tools", "viewer"]
+ScreenState = Literal["menu", "tools", "viewer", "manager"]
 
 
 def _project_root() -> Path:
@@ -131,6 +139,14 @@ def show_welcome_window() -> WelcomeRoute | None:
     worker_lock = threading.Lock()
     worker_running = False
     worker_result = ""
+    manager_model_idx = 0
+    manager_archive_idx = 0
+    manager_delete_confirm_model = ""
+    manager_delete_confirm_until_s = 0.0
+    manager_recover_confirm_archive = ""
+    manager_recover_confirm_until_s = 0.0
+    manager_promote_confirm_model = ""
+    manager_promote_confirm_until_s = 0.0
 
     def _launch_tool(spec: ToolSpec) -> None:
         nonlocal worker, worker_running, status_text, worker_result, viewer_text, viewer_title, screen_state, viewer_scroll
@@ -216,7 +232,8 @@ def show_welcome_window() -> WelcomeRoute | None:
         menu_y0 = max(172, int(win_h * 0.32))
         menu_cards.append((pygame.Rect(menu_x, menu_y0, menu_card_w, menu_card_h), "live_training"))
         menu_cards.append((pygame.Rect(menu_x, menu_y0 + menu_card_h + menu_gap, menu_card_w, menu_card_h), "analysis_tools"))
-        menu_cards.append((pygame.Rect(menu_x, menu_y0 + (menu_card_h + menu_gap) * 2, menu_card_w, menu_card_h), "settings"))
+        menu_cards.append((pygame.Rect(menu_x, menu_y0 + (menu_card_h + menu_gap) * 2, menu_card_w, menu_card_h), "model_manager"))
+        menu_cards.append((pygame.Rect(menu_x, menu_y0 + (menu_card_h + menu_gap) * 3, menu_card_w, menu_card_h), "settings"))
 
         # Grid layout: title band + 2-column content band.
         margin = 22
@@ -276,8 +293,47 @@ def show_welcome_window() -> WelcomeRoute | None:
         tools_run_btn = pygame.Rect(tools_right_rect.x + 12, tools_right_rect.bottom - tools_btn_h - 12, 128, tools_btn_h)
         tools_view_btn = pygame.Rect(tools_run_btn.right + 10, tools_run_btn.y, 138, tools_btn_h)
         tools_back_btn = pygame.Rect(win_w - 108, 18, 86, 30)
+        manager_back_btn = pygame.Rect(win_w - 108, 18, 86, 30)
         viewer_back_btn = pygame.Rect(win_w - 108, 20, 86, 30)
         viewer_copy_btn = pygame.Rect(viewer_back_btn.x - 102, 20, 92, 30)
+
+        manager_models = list_models(root / "state")
+        manager_archives = list_archives(root / "state")
+        if manager_models:
+            manager_model_idx = max(0, min(manager_model_idx, len(manager_models) - 1))
+        else:
+            manager_model_idx = 0
+        if manager_archives:
+            manager_archive_idx = max(0, min(manager_archive_idx, len(manager_archives) - 1))
+        else:
+            manager_archive_idx = 0
+        manager_selected_model = manager_models[manager_model_idx] if manager_models else ""
+        manager_selected_archive = manager_archives[manager_archive_idx] if manager_archives else None
+
+        manager_margin = 22
+        manager_title_h = 64
+        manager_content = pygame.Rect(manager_margin, manager_title_h + 20, win_w - (manager_margin * 2), win_h - manager_title_h - manager_margin - 10)
+        manager_gutter = 14
+        manager_left_w = max(340, int((manager_content.width - manager_gutter) * 0.5))
+        manager_left = pygame.Rect(manager_content.x, manager_content.y, manager_left_w, manager_content.height)
+        manager_right = pygame.Rect(manager_left.right + manager_gutter, manager_content.y, manager_content.width - manager_left_w - manager_gutter, manager_content.height)
+        manager_model_rows: list[pygame.Rect] = []
+        manager_row_h = max(54, int(manager_left.height * 0.095))
+        model_y = manager_left.y + 52
+        for _ in manager_models[:9]:
+            row = pygame.Rect(manager_left.x + 10, model_y, manager_left.width - 20, manager_row_h)
+            manager_model_rows.append(row)
+            model_y += manager_row_h + 8
+        manager_archive_rows: list[pygame.Rect] = []
+        archive_y = manager_right.y + 246
+        archive_row_h = 36
+        for _ in manager_archives[:6]:
+            row = pygame.Rect(manager_right.x + 10, archive_y, manager_right.width - 20, archive_row_h)
+            manager_archive_rows.append(row)
+            archive_y += archive_row_h + 8
+        manager_btn_promote = pygame.Rect(manager_right.x + 10, manager_right.y + 58, manager_right.width - 20, 42)
+        manager_btn_delete = pygame.Rect(manager_right.x + 10, manager_btn_promote.bottom + 10, manager_right.width - 20, 42)
+        manager_btn_recover = pygame.Rect(manager_right.x + 10, manager_btn_delete.bottom + 10, manager_right.width - 20, 42)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -299,6 +355,8 @@ def show_welcome_window() -> WelcomeRoute | None:
                         if rect.collidepoint(event.pos):
                             if route == "analysis_tools":
                                 screen_state = "tools"
+                            elif route == "model_manager":
+                                screen_state = "manager"
                             elif route == "live_training":
                                 selected_route = "live_training"
                                 running = False
@@ -306,6 +364,94 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 selected_route = "settings"
                                 running = False
                             break
+                if screen_state == "manager" and event.button == 1:
+                    if manager_back_btn.collidepoint(event.pos):
+                        screen_state = "menu"
+                    for idx_row, row in enumerate(manager_model_rows):
+                        if row.collidepoint(event.pos):
+                            manager_model_idx = idx_row
+                            manager_delete_confirm_model = ""
+                            manager_delete_confirm_until_s = 0.0
+                            manager_promote_confirm_model = ""
+                            manager_promote_confirm_until_s = 0.0
+                            break
+                    for idx_row, row in enumerate(manager_archive_rows):
+                        if row.collidepoint(event.pos):
+                            manager_archive_idx = idx_row
+                            manager_recover_confirm_archive = ""
+                            manager_recover_confirm_until_s = 0.0
+                            break
+                    if manager_btn_promote.collidepoint(event.pos):
+                        if manager_selected_model:
+                            now_s = float(time.monotonic())
+                            armed = (
+                                manager_promote_confirm_model == manager_selected_model
+                                and now_s <= float(manager_promote_confirm_until_s)
+                            )
+                            if not armed:
+                                manager_promote_confirm_model = manager_selected_model
+                                manager_promote_confirm_until_s = now_s + 8.0
+                                status_text = f"Promote armed for {manager_selected_model}. Click again within 8s to confirm."
+                            else:
+                                result = promote_to_baseline(root / "state", manager_selected_model)
+                                status_text = result.message
+                                manager_promote_confirm_model = ""
+                                manager_promote_confirm_until_s = 0.0
+                                manager_delete_confirm_model = ""
+                                manager_delete_confirm_until_s = 0.0
+                                manager_recover_confirm_archive = ""
+                                manager_recover_confirm_until_s = 0.0
+                        else:
+                            status_text = "No model selected."
+                    elif manager_btn_delete.collidepoint(event.pos):
+                        if manager_selected_model:
+                            now_s = float(time.monotonic())
+                            armed = (
+                                manager_delete_confirm_model == manager_selected_model
+                                and now_s <= float(manager_delete_confirm_until_s)
+                            )
+                            if not armed:
+                                manager_delete_confirm_model = manager_selected_model
+                                manager_delete_confirm_until_s = now_s + 8.0
+                                status_text = f"Delete armed for {manager_selected_model}. Click Delete again within 8s to confirm."
+                            else:
+                                result = delete_model(
+                                    root / "state",
+                                    manager_selected_model,
+                                    allow_delete_baseline=True,
+                                )
+                                status_text = result.message
+                                manager_delete_confirm_model = ""
+                                manager_delete_confirm_until_s = 0.0
+                                manager_promote_confirm_model = ""
+                                manager_promote_confirm_until_s = 0.0
+                                manager_recover_confirm_archive = ""
+                                manager_recover_confirm_until_s = 0.0
+                        else:
+                            status_text = "No model selected."
+                    elif manager_btn_recover.collidepoint(event.pos):
+                        if manager_selected_archive is not None:
+                            now_s = float(time.monotonic())
+                            archive_key = str(manager_selected_archive.name)
+                            armed = (
+                                manager_recover_confirm_archive == archive_key
+                                and now_s <= float(manager_recover_confirm_until_s)
+                            )
+                            if not armed:
+                                manager_recover_confirm_archive = archive_key
+                                manager_recover_confirm_until_s = now_s + 8.0
+                                status_text = f"Recover armed for {archive_key}. Click again within 8s to confirm."
+                            else:
+                                result = recover_baseline(root / "state", manager_selected_archive)
+                                status_text = result.message
+                                manager_recover_confirm_archive = ""
+                                manager_recover_confirm_until_s = 0.0
+                                manager_delete_confirm_model = ""
+                                manager_delete_confirm_until_s = 0.0
+                                manager_promote_confirm_model = ""
+                                manager_promote_confirm_until_s = 0.0
+                        else:
+                            status_text = "No archive selected."
                 if screen_state == "tools" and event.button == 1:
                     for idx_row, row in enumerate(tools_row_rects):
                         if row.collidepoint(event.pos):
@@ -362,8 +508,48 @@ def show_welcome_window() -> WelcomeRoute | None:
                     elif event.key == pygame.K_2:
                         screen_state = "tools"
                     elif event.key == pygame.K_3:
+                        screen_state = "manager"
+                    elif event.key == pygame.K_4:
                         selected_route = "settings"
                         running = False
+                elif screen_state == "manager":
+                    if event.key == pygame.K_ESCAPE:
+                        screen_state = "menu"
+                        manager_delete_confirm_model = ""
+                        manager_delete_confirm_until_s = 0.0
+                        manager_recover_confirm_archive = ""
+                        manager_recover_confirm_until_s = 0.0
+                        manager_promote_confirm_model = ""
+                        manager_promote_confirm_until_s = 0.0
+                    elif event.key == pygame.K_UP and manager_models:
+                        manager_model_idx = max(0, manager_model_idx - 1)
+                        manager_delete_confirm_model = ""
+                        manager_delete_confirm_until_s = 0.0
+                        manager_promote_confirm_model = ""
+                        manager_promote_confirm_until_s = 0.0
+                    elif event.key == pygame.K_DOWN and manager_models:
+                        manager_model_idx = min(len(manager_models) - 1, manager_model_idx + 1)
+                        manager_delete_confirm_model = ""
+                        manager_delete_confirm_until_s = 0.0
+                        manager_promote_confirm_model = ""
+                        manager_promote_confirm_until_s = 0.0
+                    elif event.key == pygame.K_r and manager_archives:
+                        now_s = float(time.monotonic())
+                        archive = manager_archives[manager_archive_idx]
+                        archive_key = str(archive.name)
+                        armed = (
+                            manager_recover_confirm_archive == archive_key
+                            and now_s <= float(manager_recover_confirm_until_s)
+                        )
+                        if not armed:
+                            manager_recover_confirm_archive = archive_key
+                            manager_recover_confirm_until_s = now_s + 8.0
+                            status_text = f"Recover armed for {archive_key}. Press R again within 8s to confirm."
+                        else:
+                            result = recover_baseline(root / "state", archive)
+                            status_text = result.message
+                            manager_recover_confirm_archive = ""
+                            manager_recover_confirm_until_s = 0.0
                 elif screen_state == "tools":
                     if event.key == pygame.K_ESCAPE:
                         screen_state = "menu"
@@ -429,7 +615,8 @@ def show_welcome_window() -> WelcomeRoute | None:
             cards = [
                 (menu_cards[0][0], "Live Training", "Open game and training controls"),
                 (menu_cards[1][0], "Analysis Tools", "Open reports and diagnostics workspace"),
-                (menu_cards[2][0], "Application Settings", "Open options and preferences"),
+                (menu_cards[2][0], "Model Manager", "Promote baseline, archive, delete, recover"),
+                (menu_cards[3][0], "Application Settings", "Open options and preferences"),
             ]
             for idx, (rect, label, sub) in enumerate(cards):
                 hovered = rect.collidepoint(mouse_pos)
@@ -609,6 +796,125 @@ def show_welcome_window() -> WelcomeRoute | None:
             if compare_mode:
                 rtxt = sel_name_font.render(_fit_text(sel_name_font, right_exp, tools_right_name_rect.width - 8), True, theme.section_header)
                 surface.blit(rtxt, (tools_right_name_rect.centerx - rtxt.get_width() // 2, tools_right_name_rect.y + 4))
+
+        elif screen_state == "manager":
+            now_s = float(time.monotonic())
+            if manager_delete_confirm_model and now_s > float(manager_delete_confirm_until_s):
+                manager_delete_confirm_model = ""
+                manager_delete_confirm_until_s = 0.0
+            if manager_recover_confirm_archive and now_s > float(manager_recover_confirm_until_s):
+                manager_recover_confirm_archive = ""
+                manager_recover_confirm_until_s = 0.0
+            if manager_promote_confirm_model and now_s > float(manager_promote_confirm_until_s):
+                manager_promote_confirm_model = ""
+                manager_promote_confirm_until_s = 0.0
+
+            title = title_font.render("Model Manager", True, theme.title_color)
+            title_y = title_y_probe
+            surface.blit(title, ((win_w - title.get_width()) // 2, title_y))
+
+            back_hovered = manager_back_btn.collidepoint(mouse_pos)
+            _draw_box(
+                surface,
+                manager_back_btn,
+                bg=_shade(theme.panel_bg, 14 if back_hovered else 8),
+                border=_shade(theme.panel_border, 24 if back_hovered else 0),
+                width=2 if back_hovered else 1,
+                radius=8,
+            )
+            back_txt = action_btn_font.render("Back", True, theme.badge_text)
+            surface.blit(back_txt, (manager_back_btn.centerx - back_txt.get_width() // 2, manager_back_btn.y + (manager_back_btn.height - back_txt.get_height()) // 2))
+
+            _draw_box(surface, manager_left, bg=_shade(theme.panel_bg, 2), border=theme.panel_border)
+            _draw_box(surface, manager_right, bg=_shade(theme.graph_bg, -2), border=theme.panel_border)
+
+            left_title = item_font.render("Saved Models", True, theme.section_header)
+            surface.blit(left_title, (manager_left.x + 12, manager_left.y + 10))
+            if not manager_models:
+                empty = body_font.render("No models found under state/ppo.", True, theme.status_color)
+                surface.blit(empty, (manager_left.x + 12, manager_left.y + 52))
+            else:
+                for idx, row in enumerate(manager_model_rows):
+                    name = manager_models[idx]
+                    hovered = row.collidepoint(mouse_pos)
+                    active = idx == manager_model_idx
+                    _draw_box(
+                        surface,
+                        row,
+                        bg=_shade(theme.panel_bg, 12 if hovered else (8 if active else 0)),
+                        border=_shade(theme.panel_border, 32 if hovered else (24 if active else 0)),
+                        width=2 if (active or hovered) else 1,
+                        radius=8,
+                    )
+                    label = item_font.render(_fit_text(item_font, name, row.width - 16), True, theme.section_header)
+                    surface.blit(label, (row.x + 10, row.y + (row.height - label.get_height()) // 2))
+
+            right_title = item_font.render("Baseline Operations", True, theme.section_header)
+            surface.blit(right_title, (manager_right.x + 12, manager_right.y + 10))
+
+            selected_model_text = manager_selected_model if manager_selected_model else "none"
+            selected_model_lbl = small_font.render(f"Selected model: {selected_model_text}", True, theme.status_color)
+            surface.blit(selected_model_lbl, (manager_right.x + 12, manager_right.y + 34))
+
+            delete_armed = (
+                bool(manager_selected_model)
+                and manager_delete_confirm_model == manager_selected_model
+                and now_s <= float(manager_delete_confirm_until_s)
+            )
+            recover_armed = (
+                manager_selected_archive is not None
+                and manager_recover_confirm_archive == str(manager_selected_archive.name)
+                and now_s <= float(manager_recover_confirm_until_s)
+            )
+            promote_armed = (
+                bool(manager_selected_model)
+                and manager_promote_confirm_model == manager_selected_model
+                and now_s <= float(manager_promote_confirm_until_s)
+            )
+            delete_label = "Confirm Delete" if delete_armed else "Delete Selected Model"
+            recover_label = "Confirm Recover" if recover_armed else "Recover Baseline From Archive"
+            promote_label = "Confirm Promote" if promote_armed else "Set Selected As Baseline"
+            action_buttons = [
+                (manager_btn_promote, promote_label, theme.toggle_positive_bg),
+                (manager_btn_delete, delete_label, theme.toggle_danger_bg),
+                (manager_btn_recover, recover_label, theme.toggle_info_bg),
+            ]
+            for rect, label, tone in action_buttons:
+                hovered = rect.collidepoint(mouse_pos)
+                _draw_box(
+                    surface,
+                    rect,
+                    bg=_shade(tone, 12 if hovered else 2),
+                    border=_shade(theme.panel_border, 24 if hovered else 0),
+                    width=2 if hovered else 1,
+                    radius=8,
+                )
+                txt = action_btn_font.render(_fit_text(action_btn_font, label, rect.width - 16), True, theme.badge_text)
+                surface.blit(txt, (rect.centerx - txt.get_width() // 2, rect.y + (rect.height - txt.get_height()) // 2))
+
+            archive_title = item_font.render("Baseline Archives", True, theme.section_header)
+            surface.blit(archive_title, (manager_right.x + 12, manager_right.y + 214))
+            if not manager_archives:
+                empty = small_font.render("No baseline archives available.", True, theme.status_color)
+                surface.blit(empty, (manager_right.x + 12, manager_right.y + 246))
+            else:
+                for idx, row in enumerate(manager_archive_rows):
+                    archive_name = manager_archives[idx].name
+                    hovered = row.collidepoint(mouse_pos)
+                    active = idx == manager_archive_idx
+                    _draw_box(
+                        surface,
+                        row,
+                        bg=_shade(theme.panel_bg, 12 if hovered else (8 if active else 0)),
+                        border=_shade(theme.panel_border, 32 if hovered else (24 if active else 0)),
+                        width=2 if (active or hovered) else 1,
+                        radius=8,
+                    )
+                    txt = small_font.render(_fit_text(small_font, archive_name, row.width - 14), True, theme.status_color)
+                    surface.blit(txt, (row.x + 8, row.y + (row.height - txt.get_height()) // 2))
+
+            status = small_font.render(_fit_text(small_font, status_text, manager_right.width - 24), True, theme.badge_text)
+            surface.blit(status, (manager_right.x + 12, manager_right.bottom - 28))
 
         else:  # viewer
             header_rect = pygame.Rect(18, 16, win_w - 36, 54)

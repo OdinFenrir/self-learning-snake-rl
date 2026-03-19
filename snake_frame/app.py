@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class SnakeFrameApp:
+    DETACHED_EXPERIMENT: str = "_detached_session"
     _LIVE_TPM_MIN: int = 1
     _LIVE_TPM_MAX: int = 12
     _HOLDOUT_MAX_STEPS: int = 5000
@@ -80,6 +81,7 @@ class SnakeFrameApp:
             small_font=self.small_font,
             on_score=self._append_episode_score,
             on_episode_info=self._append_training_episode_info,
+            experiment_name=self.DETACHED_EXPERIMENT,
         )
         self.game = runtime.game
         self.app_state = AppState()
@@ -88,6 +90,7 @@ class SnakeFrameApp:
         self.obs_config = runtime.obs_config
         self.agent = runtime.agent
         self.experiment_name = runtime.experiment_name
+        self._detached_mode = bool(self.experiment_name == self.DETACHED_EXPERIMENT)
         self.training = runtime.training
         self.holdout_eval = HoldoutEvalController(
             agent=self.agent,
@@ -669,6 +672,7 @@ class SnakeFrameApp:
             self.agent.switch_artifact_dir(target_dir)
             self.gameplay.set_artifact_dir(target_dir)
             self.experiment_name = name
+            self._detached_mode = bool(self.experiment_name == self.DETACHED_EXPERIMENT)
             self.app_state.model_dirty = False
             self.app_state.model_save_state = "saved" if bool(getattr(self.agent, "is_ready", False)) else "no_model"
             self.app_state.last_model_save_ok_at = 0.0
@@ -741,11 +745,7 @@ class SnakeFrameApp:
         if result.invalid or not payload:
             return False
 
-        current_experiment = str(getattr(self, "experiment_name", "baseline") or "baseline").strip()
-        active_experiment = str(payload.get("activeExperiment", current_experiment)).strip()
-        if active_experiment and active_experiment != current_experiment:
-            if not self._switch_experiment(active_experiment):
-                logger.warning("Failed to restore active experiment from preferences: %s", active_experiment)
+        # Detached startup mode: never switch experiment from preferences.
 
         if "themeName" in payload:
             self._apply_theme(normalize_theme_name(str(payload.get("themeName"))), announce=False)
@@ -813,9 +813,12 @@ class SnakeFrameApp:
         else:
             width = int(self.layout.window.width)
             height = int(self.layout.window.height)
+        active_experiment = str(getattr(self, "experiment_name", "baseline") or "baseline")
+        if bool(getattr(self, "_detached_mode", False)):
+            active_experiment = "baseline"
         payload = {
             "uiPrefsVersion": 1,
-            "activeExperiment": str(getattr(self, "experiment_name", "baseline") or "baseline"),
+            "activeExperiment": active_experiment,
             "themeName": self.theme.name,
             "windowBorderless": bool(self.settings.window_borderless),
             "windowWidth": width,
@@ -1148,8 +1151,9 @@ class SnakeFrameApp:
     def _build_settings_lines(self) -> list[str]:
         cfg = getattr(self.agent, "config", None)
         reward_cfg = getattr(self.agent, "reward_config", None)
+        exp_display = "New (not loaded)" if bool(getattr(self, "_detached_mode", False)) else str(self.experiment_name)
         lines = [
-            f"Experiment: {self.experiment_name}",
+            f"Experiment: {exp_display}",
             f"Board: {self.settings.board_cells}x{self.settings.board_cells} cell={self.settings.cell_px} tpm={self.settings.ticks_per_move} fps={self.settings.fps}",
             f"Safety override: {'on' if self.settings.agent_safety_override else 'off'}",
             f"Space strategy: {'on' if self.gameplay.is_space_strategy_enabled() else 'off'}",

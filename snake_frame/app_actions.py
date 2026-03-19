@@ -561,6 +561,14 @@ class AppActions:
 
     def build_status_lines(self) -> list[str]:
         snap = self.training.snapshot()
+        experiment_name = "New (not loaded)"
+        if callable(self.get_experiment_name):
+            try:
+                current_name = str(self.get_experiment_name() or "").strip()
+            except Exception:
+                current_name = ""
+            if current_name and not current_name.startswith("_"):
+                experiment_name = current_name
         if snap.active:
             last_train = "running"
         else:
@@ -588,6 +596,7 @@ class AppActions:
         elif control_policy.manual_can_steer:
             control_label = "manual"
         lines = [
+            f"Experiment: {experiment_name}",
             f"Algo: PPO (device={self.agent.device})",
             f"Model: {'ready' if inference_available else ('loaded/no-inference' if self.agent.is_ready else 'none')}",
             f"Saved: {self._build_model_save_report()}",
@@ -733,6 +742,9 @@ class AppActions:
         if not selected:
             self.set_status("Invalid experiment name", severity="warn")
             return None
+        if selected.startswith("_"):
+            self.set_status("Experiment names starting with '_' are reserved", severity="warn")
+            return None
         return selected
 
     def _choose_existing_experiment(self, *, title: str) -> str | None:
@@ -768,6 +780,9 @@ class AppActions:
         name = self._sanitize_experiment_name(selected_path.name)
         if not name:
             self.set_status("Invalid experiment folder", severity="warn")
+            return None
+        if name.startswith("_"):
+            self.set_status("Internal folders cannot be selected", severity="warn")
             return None
         return name
 

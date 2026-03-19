@@ -63,6 +63,17 @@ def test_resolve_default_artifact_dir_prefers_active_experiment() -> None:
         assert resolve_default_artifact_dir(root) == exp.resolve()
 
 
+def test_resolve_default_artifact_dir_ignores_internal_active_experiment() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        prefs = root / "state" / "ui_prefs.json"
+        baseline = root / "state" / "ppo" / "baseline"
+        baseline.mkdir(parents=True, exist_ok=True)
+        prefs.parent.mkdir(parents=True, exist_ok=True)
+        prefs.write_text('{"activeExperiment":"_detached_session"}', encoding="utf-8")
+        assert resolve_default_artifact_dir(root) == baseline.resolve()
+
+
 def test_read_jsonl_skips_corrupt_and_partial_rows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "rows.jsonl"

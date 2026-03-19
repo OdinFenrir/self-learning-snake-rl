@@ -13,7 +13,13 @@ def list_experiments(root: Path | None = None) -> list[str]:
     base = (root or project_root()) / "state" / "ppo"
     if not base.exists():
         return ["baseline"]
-    names = sorted([p.name for p in base.iterdir() if p.is_dir()])
+    names = sorted(
+        [
+            p.name
+            for p in base.iterdir()
+            if p.is_dir() and not p.name.startswith("_")
+        ]
+    )
     return names or ["baseline"]
 
 
@@ -250,4 +256,3 @@ def build_tool_commands(spec: ToolSpec, *, left_exp: str, right_exp: str) -> lis
             (str(netron_exe), str(trace_out), "-b"),
         ]
     return []
-

@@ -255,6 +255,58 @@ class TestAppControlPolicy(unittest.TestCase):
         payload = save_mock.call_args.args[1]
         self.assertEqual(int(payload["liveTicksPerMove"]), 4)
 
+    def test_load_ui_preferences_does_not_switch_experiment_in_detached_mode(self) -> None:
+        app = SnakeFrameApp.__new__(SnakeFrameApp)
+        app.settings = SimpleNamespace(
+            window_borderless=False,
+            ticks_per_move=5,
+            theme_name="retro_forest_noir",
+        )
+        app.app_state = AppState(snake_style="classic_squares", fog_density="off")
+        app.game = SimpleNamespace(
+            board_background_mode="background",
+            snake_style="classic_squares",
+            fog_density="off",
+            set_board_background_mode=lambda _mode: None,
+            set_snake_style=lambda _style: None,
+            set_fog_density=lambda _density: None,
+        )
+        app.layout = LayoutSnapshot(
+            window=WindowMetrics(width=1600, height=900, board_size=800, board_offset_x=400, board_offset_y=50),
+            panels=PanelMetrics(left_width=400, right_width=400, right_offset_x=1200),
+            graph=GraphMetrics(
+                graph_top=120,
+                graph_margin=18,
+                min_graph_height=320,
+                max_graph_height=680,
+                control_row_height=40,
+                control_gap=10,
+                status_line_height=22,
+                status_line_count=16,
+            ),
+        )
+        app._LIVE_TPM_MIN = 1
+        app._LIVE_TPM_MAX = 12
+        app._safe_int = SnakeFrameApp._safe_int
+        app._windowed_size = (1600, 900)
+        app._is_fullscreen = False
+        app._apply_theme = lambda *_args, **_kwargs: None
+        app._recreate_window = lambda *args, **kwargs: None
+        app._resize = lambda *_args, **_kwargs: None
+        app.ui_prefs_file = "unused.json"
+        app._switch_experiment = lambda _name: (_ for _ in ()).throw(AssertionError("must not switch on startup prefs"))
+
+        payload = {
+            "activeExperiment": "Test_1",
+            "windowWidth": 1600,
+            "windowHeight": 900,
+            "liveTicksPerMove": 3,
+        }
+        fake_result = SimpleNamespace(payload=payload, invalid=False)
+        with patch("snake_frame.app.load_ui_state_result", return_value=fake_result):
+            restored = SnakeFrameApp._load_ui_preferences(app)
+        self.assertTrue(restored)
+
 
 if __name__ == "__main__":
     unittest.main()

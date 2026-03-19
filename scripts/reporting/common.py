@@ -58,6 +58,8 @@ def resolve_default_artifact_dir(root: Path) -> Path:
     if ui_prefs.exists():
         payload = read_json(ui_prefs)
         active = str(payload.get("activeExperiment", "baseline") or "baseline").strip() or "baseline"
+    if active.startswith("_"):
+        active = "baseline"
     candidate = root / "state" / "ppo" / active
     if candidate.exists():
         return candidate.resolve()
@@ -123,4 +125,3 @@ def validate_required_latest_files(root: Path, family: str, out_dir: Path) -> No
     missing = [name for name in contract.required_latest_files if not (resolved / name).exists()]
     if missing:
         raise ValueError(f"contract violation: missing latest files for {family}: {missing}")
-
