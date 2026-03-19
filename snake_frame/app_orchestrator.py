@@ -7,6 +7,11 @@ def run_loop(app) -> bool:
     running = True
     try:
         while running:
+            app.actions.poll_training_state()
+            poll_holdout = getattr(app, "_poll_holdout_eval", None)
+            if callable(poll_holdout):
+                poll_holdout()
+            app._apply_ui_state_model()
             for event in pygame.event.get():
                 if app._handle_global_event(event):
                     running = False
@@ -23,10 +28,6 @@ def run_loop(app) -> bool:
                 app.generations_input.handle_event(event)
                 app._handle_buttons(event)
 
-            app.actions.poll_training_state()
-            poll_holdout = getattr(app, "_poll_holdout_eval", None)
-            if callable(poll_holdout):
-                poll_holdout()
             control_policy = app._derive_control_policy()
             if not control_policy.run_paused_waiting_snapshot:
                 app.gameplay.set_debug_options(

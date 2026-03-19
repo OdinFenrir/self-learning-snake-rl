@@ -192,6 +192,14 @@ class TestLiveArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             app = SnakeFrameApp.__new__(SnakeFrameApp)
             app._run_session_log_path = Path(tmpdir) / "run_session_log.jsonl"
+            app.state_file = Path(tmpdir) / "state" / "ui_state.json"
+            app.experiment_name = "test_1"
+            metadata_dir = app.state_file.parent / "ppo" / app.experiment_name
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            (metadata_dir / "metadata.json").write_text(
+                json.dumps({"latest_run_id": "r_test_123"}),
+                encoding="utf-8",
+            )
             app._last_logged_run_episodes = 0
             app._runlog_prev_decisions = 10
             app._runlog_prev_interventions = 4
@@ -218,6 +226,8 @@ class TestLiveArtifacts(unittest.TestCase):
             row = rows[0]
             required = {
                 "generated_at_unix_s",
+                "run_id",
+                "experiment",
                 "episode_index",
                 "score",
                 "death_reason",
@@ -231,6 +241,8 @@ class TestLiveArtifacts(unittest.TestCase):
                 "loop_escape_activations_total",
             }
             self.assertTrue(required.issubset(set(row.keys())))
+            self.assertEqual(str(row["run_id"]), "r_test_123")
+            self.assertEqual(str(row["experiment"]), "test_1")
             self.assertGreaterEqual(int(row["decisions_delta"]), 0)
             self.assertGreaterEqual(int(row["interventions_delta"]), 0)
             self.assertGreaterEqual(float(row["interventions_pct"]), 0.0)

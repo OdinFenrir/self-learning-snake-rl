@@ -56,11 +56,22 @@ def _build_html(report: dict[str, Any]) -> str:
     left_death_pct = [safe_float(left_deaths.get(k)) for k in death_keys]
     right_death_pct = [safe_float(right_deaths.get(k)) for k in death_keys]
 
-    metrics = [str(m.get("metric", "")) for m in metric_rows]
-    left_vals = [safe_float(m.get("left_value")) for m in metric_rows]
-    right_vals = [safe_float(m.get("right_value")) for m in metric_rows]
-    deltas = [safe_float(m.get("delta_right_minus_left")) for m in metric_rows]
-    delta_colors = ["#63d18d" if v >= 0 else "#f38b8b" for v in deltas]
+    timesteps_left = 0.0
+    timesteps_right = 0.0
+    core_metric_rows: list[dict[str, Any]] = []
+    for row in metric_rows:
+        metric_name = str(row.get("metric", "") or "")
+        if metric_name == "timesteps_actual":
+            timesteps_left = safe_float(row.get("left_value"))
+            timesteps_right = safe_float(row.get("right_value"))
+            continue
+        core_metric_rows.append(row)
+
+    metrics = [str(m.get("metric", "")) for m in core_metric_rows]
+    left_vals = [safe_float(m.get("left_value")) for m in core_metric_rows]
+    right_vals = [safe_float(m.get("right_value")) for m in core_metric_rows]
+    delta_pct = [safe_float(m.get("delta_pct_vs_left")) for m in core_metric_rows]
+    delta_colors = ["#63d18d" if v >= 0 else "#f38b8b" for v in delta_pct]
 
     left_art = dict(left.get("artifacts", {}))
     right_art = dict(right.get("artifacts", {}))
@@ -80,12 +91,14 @@ def _build_html(report: dict[str, Any]) -> str:
         "wins_left": safe_int(summary.get("wins_left")),
         "wins_right": safe_int(summary.get("wins_right")),
         "ties": safe_int(summary.get("ties")),
+        "timesteps_left": safe_int(timesteps_left),
+        "timesteps_right": safe_int(timesteps_right),
         "ok_count": ok_count,
         "fail_count": fail_count,
         "metrics": metrics,
         "left_vals": left_vals,
         "right_vals": right_vals,
-        "deltas": deltas,
+        "delta_pct": delta_pct,
         "delta_colors": delta_colors,
         "l_steps": l_steps,
         "l_reward": l_reward,
@@ -188,6 +201,7 @@ def _build_html(report: dict[str, Any]) -> str:
       ['Right experiment', d.right_exp || 'n/a'],
       ['Verdict', d.verdict],
       ['Wins (L/R/T)', `${{d.wins_left}} / ${{d.wins_right}} / ${{d.ties}}`],
+      ['Timesteps (L/R)', `${{d.timesteps_left}} / ${{d.timesteps_right}}`],
       ['Checks', `${{d.ok_count}} OK / ${{d.fail_count}} FAIL`],
     ];
     const cards = document.getElementById('cards');
@@ -214,11 +228,11 @@ def _build_html(report: dict[str, Any]) -> str:
     ], {{ ...baseLayout, barmode: 'group', title: 'Metric Comparison' }}, {{responsive: true, displayModeBar: false}});
 
     Plotly.newPlot('plot_deltas', [
-      {{ x: d.metrics, y: d.deltas, type: 'bar', name: 'right-left', marker: {{ color: d.delta_colors }} }},
+      {{ x: d.metrics, y: d.delta_pct, type: 'bar', name: 'delta % vs left', marker: {{ color: d.delta_colors }} }},
     ], {{
       ...baseLayout,
-      title: 'Metric Delta (right - left)',
-      yaxis: {{ ...baseLayout.yaxis, zeroline: true, zerolinecolor: '#7f8fa3' }},
+      title: 'Metric Delta % (right vs left)',
+      yaxis: {{ ...baseLayout.yaxis, title: 'delta %', zeroline: true, zerolinecolor: '#7f8fa3' }},
     }}, {{responsive: true, displayModeBar: false}});
 
     Plotly.newPlot('plot_eval_reward', [

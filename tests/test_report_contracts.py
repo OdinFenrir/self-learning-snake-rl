@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pickle
 import subprocess
@@ -140,7 +141,10 @@ def test_agent_performance_contract_outputs_and_canonical_paths() -> None:
         (artifact / "metadata.json").write_text('{"latest_run_id":"r_agent"}', encoding="utf-8")
         run_log = Path(tmp) / "run_session_log.jsonl"
         run_log.write_text(
-            '{"episode_index":1,"score":10,"death_reason":"body","mode":"ppo","train_total_steps":1024,'
+            '{"run_id":"old_run","experiment":"baseline","episode_index":1,"score":5,"death_reason":"wall","mode":"ppo","train_total_steps":512,'
+            '"interventions_pct":8.0,"interventions_delta":3,"decisions_delta":90,"risk_total":30,'
+            '"stuck_episode_delta":0,"loop_escape_activations_total":0,"generated_at_unix_s":1699990000}\n'
+            '{"run_id":"r_agent","experiment":"baseline","episode_index":1,"score":10,"death_reason":"body","mode":"ppo","train_total_steps":1024,'
             '"interventions_pct":5.0,"interventions_delta":2,"decisions_delta":100,"risk_total":20,'
             '"stuck_episode_delta":0,"loop_escape_activations_total":0,"generated_at_unix_s":1700000000}\n',
             encoding="utf-8",
@@ -164,6 +168,10 @@ def test_agent_performance_contract_outputs_and_canonical_paths() -> None:
             ]
         )
         assert result.returncode == 0, result.stderr or result.stdout
+        report_payload = json.loads((out_dir / "agent_performance_latest.json").read_text(encoding="utf-8"))
+        assert report_payload.get("run_id") == "r_agent"
+        assert int(report_payload.get("episodes", {}).get("count", 0)) == 1
+        assert str(report_payload.get("row_selection", {}).get("method", "")) == "run_id"
         result = _run(
             [
                 "scripts/agent_performance/build_agent_performance_visuals.py",

@@ -418,6 +418,10 @@ class PpoSnakeAgent:
     def eval_runs_completed(self) -> int:
         return int(self._eval_runs_completed)
 
+    @property
+    def latest_run_id(self) -> str:
+        return "" if self._latest_run_id is None else str(self._latest_run_id)
+
     def set_model_selector(self, selector: str | ModelSelector) -> None:
         self._inference_selector = self._coerce_selector(selector)
 
@@ -608,6 +612,7 @@ class PpoSnakeAgent:
             "generated_at_unix_s": time.time(),
             "device": str(self.device),
             "artifact_dir": str(self.artifact_dir),
+            "experiment_name": str(self.artifact_dir.name),
             "selector": str(self._inference_selector.value),
             "requested_total_timesteps": (
                 None

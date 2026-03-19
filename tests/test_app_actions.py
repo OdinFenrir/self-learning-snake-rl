@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -278,6 +279,31 @@ class TestAppActions(unittest.TestCase):
             self.assertEqual(switched, [])
             self.assertIn("Cannot load while training is active", app_state.status_text)
 
+    def test_save_does_not_open_experiment_picker_when_training_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_state = AppState()
+            training = _FakeTraining()
+            training._snapshot.active = True
+            picker_calls = {"count": 0}
+            actions = AppActions(
+                app_state=app_state,
+                game=_FakeGame(),
+                agent=_FakeAgent(),
+                training=training,
+                generations_input=_FakeNumericInput(),
+                state_file=Path(tmpdir) / "ui_state.json",
+                switch_experiment=lambda _name: True,
+            )
+
+            def _picker() -> str | None:
+                picker_calls["count"] += 1
+                return "test_1"
+
+            actions._choose_experiment_for_save = _picker
+            actions.handle_save_clicked()
+            self.assertEqual(int(picker_calls["count"]), 0)
+            self.assertIn("Cannot save while training is active", app_state.status_text)
+
     def test_delete_does_not_switch_experiment_when_training_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app_state = AppState()
@@ -342,6 +368,16 @@ class TestAppActions(unittest.TestCase):
             source_dir = root / "ppo" / "baseline"
             source_dir.mkdir(parents=True, exist_ok=True)
             (source_dir / "last_model.zip").write_text("model", encoding="utf-8")
+            (source_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "artifact_dir": str(source_dir),
+                        "experiment_name": "baseline",
+                        "latest_run_id": "r_source_1",
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             app_state = AppState()
             agent = _FakeAgent()
@@ -369,6 +405,9 @@ class TestAppActions(unittest.TestCase):
 
             target_file = root / "ppo" / "test_1" / "last_model.zip"
             self.assertTrue(target_file.exists())
+            target_metadata = json.loads((root / "ppo" / "test_1" / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(target_metadata.get("experiment_name")), "test_1")
+            self.assertEqual(str(target_metadata.get("artifact_dir")), str(root / "ppo" / "test_1"))
             self.assertEqual(switch_calls, ["test_1"])
             self.assertIn("copied to test_1", app_state.status_text.lower())
 

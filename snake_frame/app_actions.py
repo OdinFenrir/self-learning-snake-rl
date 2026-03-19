@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import time
@@ -211,6 +212,8 @@ class AppActions:
         self.set_status(f"Diagnostics bundle created: {bundle_path.name}{suffix}", severity="warn" if warning_count > 0 else "info")
 
     def handle_save_clicked(self) -> None:
+        if not self.can_mutate_storage("save"):
+            return
         requested_experiment: str | None = None
         current_experiment: str | None = None
         if callable(self.switch_experiment):
@@ -224,8 +227,6 @@ class AppActions:
                     current_experiment = str(self.get_experiment_name() or "").strip()
                 except Exception:
                     current_experiment = None
-        if not self.can_mutate_storage("save"):
-            return
         if self.ui_state_provider is not None:
             ui_state = self.ui_state_provider()
             model_state = str(getattr(ui_state.model_state, "value", ui_state.model_state))
@@ -826,10 +827,24 @@ class AppActions:
             if target.exists():
                 shutil.rmtree(target)
             shutil.copytree(source, target)
+            metadata_path = target / "metadata.json"
+            if metadata_path.exists():
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    payload["artifact_dir"] = str(target)
+                    payload["experiment_name"] = str(target_experiment)
+                    metadata_path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
             return True
         except OSError:
             logger.exception(
                 "Failed cloning experiment artifacts from %s to %s",
+                source,
+                target,
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "Failed rewriting cloned metadata from %s to %s",
                 source,
                 target,
             )

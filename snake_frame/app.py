@@ -608,11 +608,30 @@ class SnakeFrameApp:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, allow_nan=False) + "\n")
 
+    def _resolve_latest_run_id_for_logging(self) -> str:
+        agent = getattr(self, "agent", None)
+        live_run_id = str(getattr(agent, "latest_run_id", "") or "").strip()
+        if live_run_id:
+            return live_run_id
+        try:
+            metadata_path = Path(self.state_file).parent / "ppo" / str(self.experiment_name) / "metadata.json"
+            if not metadata_path.exists():
+                return ""
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return ""
+            run_id = str(payload.get("latest_run_id", "") or "").strip()
+            return run_id
+        except Exception:
+            return ""
+
     def _append_run_session_log_if_needed(self) -> None:
         scores = [int(v) for v in getattr(self.game, "episode_scores", [])]
         if len(scores) <= int(self._last_logged_run_episodes):
             return
         telemetry: GameplayTelemetrySnapshot = self.gameplay.telemetry_snapshot()
+        run_id = self._resolve_latest_run_id_for_logging()
+        experiment = str(getattr(self, "experiment_name", "") or "").strip()
         for idx in range(int(self._last_logged_run_episodes), len(scores)):
             decisions_total = int(telemetry.decisions_total)
             interventions_total = int(telemetry.interventions_total)
@@ -622,6 +641,8 @@ class SnakeFrameApp:
             intervention_pct = 100.0 * float(delta_interventions) / float(max(1, delta_decisions))
             payload = {
                 "generated_at_unix_s": time.time(),
+                "run_id": str(run_id),
+                "experiment": str(experiment),
                 "episode_index": int(idx + 1),
                 "score": int(scores[idx]),
                 "death_reason": str(telemetry.last_death_reason),

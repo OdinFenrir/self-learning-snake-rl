@@ -45,6 +45,82 @@ class ReportPaths:
     out_dir: Path
 
 
+def _latest_episode_segment(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    segment: list[dict[str, Any]] = []
+    segments: list[list[dict[str, Any]]] = []
+    prev_episode = -1
+    for row in rows:
+        episode = safe_int(row.get("episode_index"), -1)
+        if episode < 1:
+            continue
+        if segment and episode <= prev_episode:
+            segments.append(segment)
+            segment = []
+        segment.append(row)
+        prev_episode = episode
+    if segment:
+        segments.append(segment)
+    if not segments:
+        return []
+    return segments[-1]
+
+
+def _select_rows_for_report(raw_rows: list[dict[str, Any]], *, run_id: str, experiment: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    target_run_id = str(run_id or "").strip()
+    target_experiment = str(experiment or "").strip()
+
+    if target_run_id:
+        rows_with_any_run_id = [
+            row for row in raw_rows if str(row.get("run_id", "") or "").strip()
+        ]
+        run_rows = [
+            row
+            for row in raw_rows
+            if str(row.get("run_id", "") or "").strip() == target_run_id and safe_int(row.get("episode_index"), -1) >= 1
+        ]
+        if run_rows:
+            return _episode_rows(run_rows), {
+                "method": "run_id",
+                "selected_run_id": target_run_id,
+                "selected_experiment": target_experiment,
+                "raw_row_count": len(raw_rows),
+                "selected_row_count": len(run_rows),
+            }
+        if rows_with_any_run_id:
+            return [], {
+                "method": "run_id_no_match",
+                "selected_run_id": target_run_id,
+                "selected_experiment": target_experiment,
+                "raw_row_count": len(raw_rows),
+                "selected_row_count": 0,
+            }
+
+    if target_experiment:
+        exp_rows = [
+            row
+            for row in raw_rows
+            if str(row.get("experiment", "") or "").strip().lower() == target_experiment.lower()
+        ]
+        if exp_rows:
+            latest = _latest_episode_segment(exp_rows)
+            return _episode_rows(latest), {
+                "method": "experiment_latest_segment",
+                "selected_run_id": target_run_id,
+                "selected_experiment": target_experiment,
+                "raw_row_count": len(raw_rows),
+                "selected_row_count": len(latest),
+            }
+
+    latest_any = _latest_episode_segment(raw_rows)
+    return _episode_rows(latest_any), {
+        "method": "latest_segment_fallback",
+        "selected_run_id": target_run_id,
+        "selected_experiment": target_experiment,
+        "raw_row_count": len(raw_rows),
+        "selected_row_count": len(latest_any),
+    }
+
+
 def _episode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for row in rows:
@@ -100,7 +176,10 @@ def _build_checks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_report(paths: ReportPaths) -> dict[str, Any]:
     metadata = read_json(paths.artifact_dir / "metadata.json")
-    rows = _episode_rows(read_jsonl(paths.run_log_path))
+    run_id = str(metadata.get("latest_run_id", "") or "").strip()
+    experiment = str(metadata.get("experiment_name", "") or metadata.get("experiment", "") or paths.artifact_dir.name).strip()
+    raw_rows = read_jsonl(paths.run_log_path)
+    rows, row_selection = _select_rows_for_report(raw_rows, run_id=run_id, experiment=experiment)
     scores = [safe_int(r.get("score")) for r in rows]
     interventions_pct = [safe_float(r.get("interventions_pct")) for r in rows]
     decisions_delta = [safe_int(r.get("decisions_delta")) for r in rows]
@@ -124,7 +203,9 @@ def _build_report(paths: ReportPaths) -> dict[str, Any]:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "artifact_dir": str(paths.artifact_dir),
         "run_session_log_path": str(paths.run_log_path),
-        "run_id": str(metadata.get("latest_run_id", "")),
+        "run_id": run_id,
+        "experiment": experiment,
+        "row_selection": row_selection,
         "episodes": {
             "count": len(rows),
             "score_mean": (sum(scores) / float(len(scores))) if scores else 0.0,
@@ -157,6 +238,8 @@ def _to_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- Artifact dir: `{report.get('artifact_dir')}`")
     lines.append(f"- Run log: `{report.get('run_session_log_path')}`")
     lines.append(f"- Run id: `{report.get('run_id')}`")
+    lines.append(f"- Experiment: `{report.get('experiment')}`")
+    lines.append(f"- Row selection: `{dict(report.get('row_selection', {})).get('method', 'unknown')}`")
     lines.append("")
     lines.append("## Episode Performance")
     lines.append(f"- Episodes: {ep.get('count')}")
