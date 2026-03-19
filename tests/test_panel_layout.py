@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from snake_frame.panel_layout import build_panel_layout
+from snake_frame.panel_layout import build_panel_layout, build_right_panel_layout
 from snake_frame.settings import Settings
 
 
@@ -40,6 +40,18 @@ class TestPanelLayout(unittest.TestCase):
         self.assertGreaterEqual(layout.graph_rect.height, 1)
         self.assertLessEqual(layout.graph_rect.bottom, settings.window_px)
         self.assertGreaterEqual(layout.width, 1)
+
+    def test_right_panel_layout_bounds(self) -> None:
+        settings = Settings()
+        settings.apply_window_size(1600, 820)
+        layout = build_right_panel_layout(settings)
+        self.assertGreater(layout.utility_row_height, 0)
+        self.assertGreater(layout.training_graph_rect.height, 0)
+        self.assertGreater(layout.run_graph_rect.height, 0)
+        self.assertGreaterEqual(layout.training_graph_rect.top, layout.training_badges_y + layout.training_badges_height)
+        self.assertGreaterEqual(layout.training_graph_rect.left, settings.right_panel_offset_x)
+        self.assertLessEqual(layout.training_graph_rect.right, settings.right_panel_offset_x + settings.right_panel_px)
+        self.assertLessEqual(layout.training_graph_rect.bottom, settings.window_height_px)
 
 
 if __name__ == "__main__":

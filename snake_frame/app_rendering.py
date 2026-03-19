@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 def draw(app) -> None:
     app.surface.fill(app.theme.surface_bg)
+    draw_board_column_background(app)
     app._apply_ui_state_model()
     app.gameplay.set_space_strategy_enabled(app.app_state.space_strategy_enabled)
     control_policy = app._derive_control_policy()
@@ -18,7 +19,7 @@ def draw(app) -> None:
     )
     app._set_toggle_button_visual(
         app.btn_adaptive_toggle,
-        label="Adaptive Reward",
+        label="Reward Shaping",
         enabled=adaptive_enabled,
         on_color=(app.theme.toggle_positive_bg, app.theme.toggle_positive_hover),
         off_color=(app.theme.toggle_negative_bg, app.theme.toggle_negative_hover),
@@ -26,7 +27,7 @@ def draw(app) -> None:
     space_strategy_enabled = bool(app.gameplay.is_space_strategy_enabled())
     app._set_toggle_button_visual(
         app.btn_space_strategy_toggle,
-        label="Space Strategy",
+        label="Safe Space Bias",
         enabled=space_strategy_enabled,
         on_color=(app.theme.toggle_positive_bg, app.theme.toggle_positive_hover),
         off_color=(app.theme.toggle_negative_bg, app.theme.toggle_negative_hover),
@@ -34,7 +35,7 @@ def draw(app) -> None:
     tail_trend_enabled = bool(getattr(app.app_state, 'tail_trend_enabled', True))
     app._set_toggle_button_visual(
         app.btn_tail_trend_toggle,
-        label="Tail Trend",
+        label="Tail Trend Assist",
         enabled=tail_trend_enabled,
         on_color=(app.theme.toggle_positive_bg, app.theme.toggle_positive_hover),
         off_color=(app.theme.toggle_negative_bg, app.theme.toggle_negative_hover),
@@ -42,7 +43,7 @@ def draw(app) -> None:
     debug_enabled = bool(app.app_state.debug_overlay)
     app._set_toggle_button_visual(
         app.btn_debug_toggle,
-        label="Debug",
+        label="Debug Overlay",
         enabled=debug_enabled,
         on_color=(app.theme.toggle_info_bg, app.theme.toggle_info_hover),
         off_color=(app.theme.debug_off_bg, app.theme.debug_off_hover),
@@ -50,20 +51,20 @@ def draw(app) -> None:
     reachable_enabled = bool(app.app_state.debug_reachable_overlay)
     app._set_toggle_button_visual(
         app.btn_reachable_toggle,
-        label="Reach",
+        label="Reachability Overlay",
         enabled=reachable_enabled,
         on_color=(app.theme.toggle_warm_bg, app.theme.toggle_warm_hover),
         off_color=(app.theme.reach_off_bg, app.theme.reach_off_hover),
     )
     app.btn_theme_cycle.label = f"Theme: {app.theme.name}"
-    app.btn_board_bg_cycle.label = f"Board BG: {app.game.board_background_label()}"
-    app.btn_snake_style_cycle.label = f"Snake: {app.game.snake_style_label()}"
-    app.btn_fog_cycle.label = f"Fog: {app.game.fog_density_label()}"
-    app.btn_speed_down.label = f"Live Speed - (TPM {int(app.settings.ticks_per_move)})"
-    app.btn_speed_up.label = "Live Speed +"
+    app.btn_board_bg_cycle.label = f"Board Style: {app.game.board_background_label()}"
+    app.btn_snake_style_cycle.label = f"Snake Look: {app.game.snake_style_label()}"
+    app.btn_fog_cycle.label = f"Fog Level: {app.game.fog_density_label()}"
+    app.btn_speed_down.label = f"Slower (TPM {int(app.settings.ticks_per_move)})"
+    app.btn_speed_up.label = "Faster"
     ppo_mode = str(getattr(app, "_holdout_eval_mode", "ppo_only")) == "ppo_only"
-    app.btn_eval_mode_ppo.label = "Set Eval: PPO Only [ON]" if ppo_mode else "Set Eval: PPO Only"
-    app.btn_eval_mode_controller.label = "Set Eval: Controller ON [ON]" if not ppo_mode else "Set Eval: Controller ON"
+    app.btn_eval_mode_ppo.label = "Eval Uses PPO [ON]" if ppo_mode else "Eval Uses PPO"
+    app.btn_eval_mode_controller.label = "Eval Uses Controller [ON]" if not ppo_mode else "Eval Uses Controller"
     holdout_eval = getattr(app, "holdout_eval", None)
     eval_snap = holdout_eval.snapshot() if holdout_eval is not None else None
     suite_active = bool(getattr(app, "_eval_suite_active", False))
@@ -77,17 +78,44 @@ def draw(app) -> None:
         except Exception:
             selector = "best"
     if suite_active:
-        app.btn_eval_holdout.label = "Eval Holdout (disabled during suite)"
+        app.btn_eval_holdout.label = "Run Holdout Check (disabled during full eval)"
     elif eval_snap is not None and bool(eval_snap.active):
-        app.btn_eval_holdout.label = f"Eval Holdout ({int(eval_snap.completed)}/{int(eval_snap.total)})"
+        app.btn_eval_holdout.label = f"Run Holdout Check ({int(eval_snap.completed)}/{int(eval_snap.total)})"
     else:
-        app.btn_eval_holdout.label = f"Eval Holdout ({holdout_mode_label}, {selector})"
+        app.btn_eval_holdout.label = f"Run Holdout Check ({holdout_mode_label}, {selector})"
     suite_phase = str(getattr(app, "_eval_suite_phase", "idle"))
     if suite_active and eval_snap is not None and bool(eval_snap.active):
         phase_label = "PPO" if suite_phase == "ppo" else "CTRL"
-        app.btn_eval_suite.label = f"Run Eval Suite ({phase_label} {int(eval_snap.completed)}/{int(eval_snap.total)})"
+        app.btn_eval_suite.label = f"Run Full Evaluation ({phase_label} {int(eval_snap.completed)}/{int(eval_snap.total)})"
     else:
-        app.btn_eval_suite.label = f"Run Eval Suite (PPO + Controller, {selector})"
+        app.btn_eval_suite.label = f"Run Full Evaluation (PPO + Controller, {selector})"
+    app.btn_diagnostics.label = "Export Diagnostics"
+    selected_tab = str(getattr(app.app_state, "right_panel_tab", "train")).strip().lower()
+    if selected_tab not in ("train", "run", "debug"):
+        selected_tab = "train"
+    tab_palette_active = (app.theme.toggle_positive_bg, app.theme.toggle_positive_hover)
+    tab_palette_idle = (app.theme.toggle_info_bg, app.theme.toggle_info_hover)
+    app.btn_tab_train.label = "Train"
+    app.btn_tab_train.bg, app.btn_tab_train.bg_hover = tab_palette_active if selected_tab == "train" else tab_palette_idle
+    app.btn_tab_run.label = "Run"
+    app.btn_tab_run.bg, app.btn_tab_run.bg_hover = tab_palette_active if selected_tab == "run" else tab_palette_idle
+    app.btn_tab_debug.label = "Debug"
+    app.btn_tab_debug.bg, app.btn_tab_debug.bg_hover = tab_palette_active if selected_tab == "debug" else tab_palette_idle
+    left_status_lines = app.actions.build_status_lines()[:6]
+    train_deaths = app.app_state.training_death_counts or {}
+    training_status_lines = [
+        f"Eval: {getattr(app.training.snapshot(), 'last_eval_score', None):.2f}" if getattr(app.training.snapshot(), "last_eval_score", None) is not None else "Eval: n/a",
+        f"BestEval: {getattr(app.training.snapshot(), 'best_eval_score', None):.2f}" if getattr(app.training.snapshot(), "best_eval_score", None) is not None else "BestEval: n/a",
+        f"Train deaths: {app._format_death_counts(train_deaths)}",
+    ]
+    telemetry = app.gameplay.telemetry_snapshot()
+    run_status_lines = [
+        f"Mode: {telemetry.current_mode}",
+        f"Switch: {telemetry.last_switch_reason}",
+        f"Interventions: {telemetry.interventions_total}/{telemetry.decisions_total}",
+        f"Deaths: {app._format_death_counts({'wall': telemetry.deaths_wall, 'body': telemetry.deaths_body, 'starvation': telemetry.deaths_starvation, 'fill': telemetry.deaths_fill, 'other': telemetry.deaths_other})}",
+    ]
+    debug_status_lines = app._build_dynamic_status_lines() + app._build_settings_lines()
     panel_data = PanelRenderData(
         training_episode_scores=[int(v) for v in app.app_state.training_episode_scores],
         run_episode_scores=app._run_graph_scores(),
@@ -95,12 +123,15 @@ def draw(app) -> None:
         run_graph_rect=pygame.Rect(app.run_graph_rect),
         training_graph_badges=app._build_training_graph_badges(),
         run_graph_badges=app._build_run_graph_badges(),
-        run_status_lines=app.actions.build_status_lines() + app._build_dynamic_status_lines(),
-        settings_lines=app._build_settings_lines(),
+        left_status_lines=left_status_lines,
+        training_status_lines=training_status_lines,
+        run_status_lines=run_status_lines,
+        debug_status_lines=debug_status_lines,
         training_header_y=app.training_header_y,
         training_badges_y=app.training_badges_y,
         run_header_y=app.run_header_y,
         run_badges_y=app.run_badges_y,
+        selected_tab=selected_tab,
     )
     try:
         app.panel_renderer.draw(
@@ -139,13 +170,45 @@ def draw_board_frame(app) -> None:
         int(app.settings.window_px),
         int(app.settings.window_px),
     )
-    outer = board_rect.inflate(8, 8)
-    inner = board_rect.inflate(2, 2)
-    pygame.draw.rect(app.surface, app.theme.board_frame_bg, outer, width=2, border_radius=10)
-    pygame.draw.rect(app.surface, app.theme.board_frame_border, outer, width=1, border_radius=10)
-    pygame.draw.rect(app.surface, app.theme.board_frame_inner, inner, width=2, border_radius=8)
-    highlight = pygame.Rect(outer.x + 2, outer.y + 2, max(10, outer.width - 4), 4)
-    pygame.draw.rect(app.surface, app.theme.board_frame_highlight, highlight, border_radius=3)
+    pygame.draw.rect(app.surface, app.theme.board_frame_border, board_rect, width=1, border_radius=6)
+
+
+def draw_board_column_background(app) -> None:
+    column_rect = pygame.Rect(
+        int(app.settings.board_offset_x),
+        0,
+        int(app.settings.window_px),
+        int(app.layout.window.height),
+    )
+    bg_surface = _board_column_background_surface(app, column_rect.width, column_rect.height)
+    app.surface.blit(bg_surface, (column_rect.x, column_rect.y))
+
+
+def _board_column_background_surface(app, width: int, height: int) -> pygame.Surface:
+    key = (
+        int(width),
+        int(height),
+        tuple(app.theme.panel_bg),
+        tuple(app.theme.panel_bg_accent),
+    )
+    cached = getattr(app, "_board_column_bg_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    surf = pygame.Surface((max(1, int(width)), max(1, int(height))))
+    if pygame.display.get_surface() is not None:
+        surf = surf.convert()
+    h = max(1, int(height))
+    surf.fill(app.theme.panel_bg)
+    for y in range(0, h, 4):
+        t = float(y) / float(max(1, h - 1))
+        shade = (
+            int(app.theme.panel_bg_accent[0] * (1.0 - t) + app.theme.panel_bg[0] * t),
+            int(app.theme.panel_bg_accent[1] * (1.0 - t) + app.theme.panel_bg[1] * t),
+            int(app.theme.panel_bg_accent[2] * (1.0 - t) + app.theme.panel_bg[2] * t),
+        )
+        surf.fill(shade, (0, y, int(width), 1))
+    app._board_column_bg_cache = (key, surf)
+    return surf
 
 
 def draw_window_chrome(app) -> None:
@@ -201,108 +264,117 @@ def draw_options_window(app) -> None:
     overlay.fill((0, 0, 0, 132))
     app.surface.blit(overlay, (0, 0))
 
-    # Create a centered, reasonably-sized options window with increased size for more spacing
+    # Centered options window with fixed header/footer and responsive content grid.
     window_width = app.layout.window.width
     window_height = app.layout.window.height
-    
-    # Options window dimensions (percentage of window, with increased limits for better spacing)
-    panel_width = min(int(window_width * 0.8), 900)  # 80% of width, max 900px
-    panel_height = min(int(window_height * 0.8), 1000)  # 80% of height, max 1000px
-    
-    # Center the panel
+
+    panel_width = max(560, min(int(window_width * 0.84), 980))
+    panel_height = max(520, min(int(window_height * 0.86), 900))
     panel_x = (window_width - panel_width) // 2
     panel_y = (window_height - panel_height) // 2
     panel = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
 
-    # Draw the panel background and border
     pygame.draw.rect(app.surface, app.theme.graph_bg, panel, border_radius=12)
     pygame.draw.rect(app.surface, app.theme.board_frame_border, panel, width=2, border_radius=12)
 
-    # Padding for better space usage
-    pad = 15  # Inner padding for the panel content
-    row_h = max(26, int(app.design_tokens.components.button_row_height) * 0.85)  # Slightly reduced row height for balance
-    gap = max(6, int(app.design_tokens.spacing.section_gap) * 0.7)  # Increased gap between items
-    shortcuts_row_h = 22  # Height of each shortcut row
+    pad = 16
+    row_h = max(24, int(app.design_tokens.components.button_row_height * 0.78))
+    gap = 6
+    section_gap = 10
+    section_title_gap = 6
+    col_gap = 12
+    close_h = row_h
 
-    # Header
-    head = safe_render_text(app, "Options", app.theme.section_header, small=False)  # Use regular font for header
-    # Center header horizontally within panel
+    head = safe_render_text(app, "Options", app.theme.section_header, small=False)
     head_x = panel.x + (panel.width - head.get_width()) // 2
     app.surface.blit(head, (head_x, panel.y + pad))
+    header_bottom = int(panel.y + pad + head.get_height() + 8)
 
-    # Button dimensions
-    btn_w = panel.width - (pad * 2)
-    row_y = panel.y + pad * 2 + head.get_height()  # Start below header with padding
-    
-    sections = [
-        ("Training", [app.btn_adaptive_toggle, app.btn_space_strategy_toggle, app.btn_tail_trend_toggle]),
-        ("Visual", [app.btn_theme_cycle, app.btn_board_bg_cycle, app.btn_snake_style_cycle, app.btn_fog_cycle]),
-        ("Live Speed", [app.btn_speed_down, app.btn_speed_up]),
-        ("Evaluation", [app.btn_eval_suite, app.btn_eval_holdout]),
-        ("Debug", [app.btn_debug_toggle, app.btn_reachable_toggle, app.btn_diagnostics]),
+    sections: list[tuple[str, list[list]]] = [
+        (
+            "Training",
+            [
+                [app.btn_adaptive_toggle],
+                [app.btn_space_strategy_toggle],
+                [app.btn_tail_trend_toggle],
+            ],
+        ),
+        (
+            "Visual",
+            [
+                [app.btn_theme_cycle, app.btn_board_bg_cycle],
+                [app.btn_snake_style_cycle, app.btn_fog_cycle],
+            ],
+        ),
+        (
+            "Playback Speed",
+            [
+                [app.btn_speed_down, app.btn_speed_up],
+            ],
+        ),
+        (
+            "Model Checks",
+            [
+                [app.btn_eval_suite],
+                [app.btn_eval_holdout],
+                [app.btn_eval_mode_ppo, app.btn_eval_mode_controller],
+            ],
+        ),
+        (
+            "Debug & Tools",
+            [
+                [app.btn_debug_toggle, app.btn_reachable_toggle],
+                [app.btn_diagnostics],
+            ],
+        ),
     ]
-    for title, buttons in sections:
+
+    total_rows = sum(len(rows) for _, rows in sections)
+    total_titles = len(sections)
+    min_content_h = (
+        (total_rows * row_h)
+        + (max(0, total_rows - total_titles) * gap)
+        + (total_titles * (app.small_font.get_linesize() + section_title_gap))
+        + ((total_titles - 1) * section_gap)
+    )
+    content_top = header_bottom
+    footer_top = int(panel.bottom - pad - close_h)
+    content_bottom = int(footer_top - 16)
+    available_h = max(120, content_bottom - content_top)
+    if min_content_h > available_h:
+        scale = max(0.72, float(available_h) / float(max(1, min_content_h)))
+        row_h = max(20, int(row_h * scale))
+        gap = max(3, int(gap * scale))
+        section_gap = max(5, int(section_gap * scale))
+
+    full_w = int(panel.width - (pad * 2))
+    half_w = int((full_w - col_gap) // 2)
+    row_y = int(content_top)
+    mouse = pygame.mouse.get_pos()
+
+    for title, rows in sections:
+        if row_y + app.small_font.get_linesize() > content_bottom:
+            break
         title_surf = safe_render_text(app, title, app.theme.section_header, small=True)
-        # Center title horizontally within panel
         title_x = panel.x + (panel.width - title_surf.get_width()) // 2
         app.surface.blit(title_surf, (title_x, row_y))
-        row_y += 34  # Increased space after title to push buttons down further
-        for btn in buttons:
-            # Center buttons horizontally within panel
-            btn_x = panel.x + (panel.width - btn_w) // 2
-            btn.rect = pygame.Rect(btn_x, row_y, btn_w, row_h)
-            btn.draw(app.surface, app.small_font, pygame.mouse.get_pos())
-            row_y += row_h + gap
-    
-    # Shortcuts section with bounds checking
-    shortcuts_start_y = int(row_y + 4)
-    # Ensure we have enough space for shortcuts
-    if shortcuts_start_y + 30 + (len(app._SHORTCUTS) * shortcuts_row_h) > panel.bottom - pad * 2:
-        # If not enough space, reduce shortcuts row height
-        shortcuts_row_h = max(18, (panel.bottom - pad * 2 - shortcuts_start_y - 30) // len(app._SHORTCUTS))
-    draw_shortcuts_list(app, panel=panel, start_y=shortcuts_start_y, pad=pad)
-    shortcuts_end_y = int(shortcuts_start_y + 25 + (len(app._SHORTCUTS) * shortcuts_row_h))
-    close_y = min(int(panel.bottom - row_h - 8), int(shortcuts_end_y + gap // 2))
-    app.btn_options_close.rect = pygame.Rect(panel.x + pad, close_y, btn_w, row_h)
-    app.btn_options_close.draw(app.surface, app.small_font, pygame.mouse.get_pos())
+        row_y += int(title_surf.get_height() + section_title_gap)
+        for row in rows:
+            if row_y + row_h > content_bottom:
+                break
+            if len(row) == 1:
+                btn = row[0]
+                btn.rect = pygame.Rect(panel.x + pad, row_y, full_w, row_h)
+                btn.draw(app.surface, app.small_font, mouse)
+            else:
+                left_btn = row[0]
+                right_btn = row[1]
+                left_btn.rect = pygame.Rect(panel.x + pad, row_y, half_w, row_h)
+                right_btn.rect = pygame.Rect(panel.x + pad + half_w + col_gap, row_y, half_w, row_h)
+                left_btn.draw(app.surface, app.small_font, mouse)
+                right_btn.draw(app.surface, app.small_font, mouse)
+            row_y += int(row_h + gap)
+        row_y += int(section_gap)
 
-
-def draw_shortcuts_list(app, *, panel: pygame.Rect, start_y: int, pad: int) -> None:
-    title = safe_render_text(app, "Shortcuts", app.theme.section_header, small=True)  # Smaller font for title
-    # Center title horizontally within panel
-    title_x = panel.x + (panel.width - title.get_width()) // 2
-    app.surface.blit(title, (title_x, int(start_y)))
-    y = int(start_y + 34)  # Increased space after title to push buttons down to 34 pixels as requested
-    key_w = max(80, int(panel.width * 0.2))  # Further reduced key width
-    max_desc_w = max(50, int(panel.width - (pad * 2) - key_w - 6))  # Further reduced description width
-    for key, desc in app._SHORTCUTS:
-        # Check if we have enough vertical space
-        if y + 20 > panel.bottom - pad - 15:  # Leave space for close button
-            break
-        key_rect = pygame.Rect(panel.x + pad, y, key_w, 16)  # Further reduced height
-        pygame.draw.rect(app.surface, app.theme.badge_bg, key_rect, border_radius=4)
-        pygame.draw.rect(app.surface, app.theme.badge_border, key_rect, width=1, border_radius=4)
-        key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
-        # Ensure key text fits
-        if key_surf.get_width() > key_w - 6:
-            key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
-            # Truncate if still too long
-            while key_surf.get_width() > key_w - 8 and len(key) > 0:
-                key = key[:-1]
-                if len(key) == 0:
-                    key_surf = safe_render_text(app, "", app.theme.badge_text, small=True)
-                    break
-                key_surf = safe_render_text(app, key, app.theme.badge_text, small=True)
-        app.surface.blit(key_surf, key_surf.get_rect(center=key_rect.center))
-        desc_surf = safe_render_text(app, desc, app.theme.status_color, small=True)
-        # Ensure description text fits
-        if desc_surf.get_width() > max_desc_w:
-            txt = desc
-            while txt and desc_surf.get_width() > max_desc_w:
-                txt = txt[:-1]
-                if len(txt) == 0:
-                    desc_surf = safe_render_text(app, "", app.theme.status_color, small=True)
-                    break
-                desc_surf = safe_render_text(app, txt + "...", app.theme.status_color, small=True)
-        app.surface.blit(desc_surf, (int(key_rect.right + 6), int(y + 1)))
-        y += 18  # Further reduced line spacing
+    app.btn_options_close.rect = pygame.Rect(panel.x + pad, footer_top, full_w, close_h)
+    app.btn_options_close.draw(app.surface, app.small_font, mouse)

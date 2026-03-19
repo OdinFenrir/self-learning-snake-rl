@@ -50,8 +50,28 @@ class TestControlsBuilder(unittest.TestCase):
         self.assertEqual(controls.btn_debug_toggle.rect.width, controls.btn_reachable_toggle.rect.width)
         self.assertGreater(controls.training_graph_rect.height, 0)
         self.assertGreater(controls.run_graph_rect.height, 0)
-        self.assertLess(controls.training_graph_rect.bottom, controls.run_graph_rect.top)
+        self.assertEqual(controls.training_graph_rect.x, controls.run_graph_rect.x)
+        self.assertEqual(controls.training_graph_rect.width, controls.run_graph_rect.width)
         self.assertGreaterEqual(controls.graph_rect.x, int(settings.right_panel_offset_x))
+
+    def test_build_controls_stacks_pairs_when_left_panel_tight(self) -> None:
+        settings = Settings()
+        settings.apply_window_size(1200, 760)
+        controls = build_controls(
+            settings,
+            min_graph_height=260,
+            max_graph_height=470,
+            graph_margin=18,
+            graph_top=52,
+            control_row_height=40,
+            control_gap=10,
+            status_line_height=22,
+        )
+        if controls.btn_train_start.rect.width == controls.generations_input.rect.width:
+            self.assertEqual(controls.btn_train_stop.rect.width, controls.generations_input.rect.width)
+            self.assertGreater(controls.btn_train_stop.rect.y, controls.btn_train_start.rect.y)
+            self.assertEqual(controls.btn_game_start.rect.width, controls.generations_input.rect.width)
+            self.assertEqual(controls.btn_game_stop.rect.width, controls.generations_input.rect.width)
 
 
 if __name__ == "__main__":

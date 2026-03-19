@@ -581,6 +581,27 @@ class TestAppActions(unittest.TestCase):
             lines = actions.build_status_lines()
             self.assertTrue(any(line.startswith("Health: ") for line in lines))
 
+    def test_status_lines_include_persistent_model_save_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_state = AppState()
+            training = _FakeTraining()
+            agent = _FakeAgent()
+            actions = AppActions(
+                app_state=app_state,
+                game=_FakeGame(),
+                agent=agent,
+                training=training,
+                generations_input=_FakeNumericInput(),
+                state_file=Path(tmpdir) / "ui_state.json",
+            )
+            lines = actions.build_status_lines()
+            self.assertTrue(any("Saved: no model on disk" in line for line in lines))
+
+            agent.is_ready = True
+            actions.on_train_start_clicked()
+            lines = actions.build_status_lines()
+            self.assertTrue(any("Saved: unsaved changes" in line for line in lines))
+
     def test_load_latest_checkpoint_action_updates_status_and_resets_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app_state = AppState()

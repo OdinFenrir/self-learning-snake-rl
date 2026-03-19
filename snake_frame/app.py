@@ -40,16 +40,6 @@ class SnakeFrameApp:
     _LIVE_TPM_MIN: int = 1
     _LIVE_TPM_MAX: int = 12
     _HOLDOUT_MAX_STEPS: int = 5000
-    _SHORTCUTS: tuple[tuple[str, str], ...] = (
-        ("Arrows / WASD", "Manual steer (manual mode only)"),
-        ("R", "Reset run"),
-        ("F10", "Toggle borderless / windowed"),
-        ("F9", "Minimize window"),
-        ("F11", "Toggle fullscreen"),
-        ("Esc", "Close app"),
-        ("Alt+F4", "Close app"),
-        ("Mouse Left", "Use buttons and inputs"),
-    )
 
     def __init__(self) -> None:
         self.settings = Settings()
@@ -208,11 +198,17 @@ class SnakeFrameApp:
         self.btn_debug_toggle: Button = controls.btn_debug_toggle
         self.btn_reachable_toggle: Button = controls.btn_reachable_toggle
         self.btn_diagnostics: Button = controls.btn_diagnostics
+        self.btn_tab_train: Button = controls.btn_tab_train
+        self.btn_tab_run: Button = controls.btn_tab_run
+        self.btn_tab_debug: Button = controls.btn_tab_debug
         if hasattr(self, "actions"):
             self.actions.set_generations_input(self.generations_input)
 
     def _bind_button_actions(self) -> None:
         self._button_actions_main: list[tuple[Button, Callable[[], None]]] = [
+            (self.btn_tab_train, self._on_tab_train_clicked),
+            (self.btn_tab_run, self._on_tab_run_clicked),
+            (self.btn_tab_debug, self._on_tab_debug_clicked),
             (self.btn_train_start, self.actions.on_train_start_clicked),
             (self.btn_train_stop, self.actions.on_train_stop_clicked),
             (self.btn_save, self.actions.handle_save_clicked),
@@ -224,6 +220,9 @@ class SnakeFrameApp:
             (self.btn_options, self._on_options_open_clicked),
         ]
         self._button_actions_options: list[tuple[Button, Callable[[], None]]] = [
+            (self.btn_tab_train, self._on_tab_train_clicked),
+            (self.btn_tab_run, self._on_tab_run_clicked),
+            (self.btn_tab_debug, self._on_tab_debug_clicked),
             (self.btn_adaptive_toggle, self.actions.on_adaptive_toggle_clicked),
             (self.btn_space_strategy_toggle, self._on_space_strategy_toggle_clicked),
             (self.btn_tail_trend_toggle, self._on_tail_trend_toggle_clicked),
@@ -240,6 +239,18 @@ class SnakeFrameApp:
             (self.btn_diagnostics, self.actions.handle_diagnostics_clicked),
             (self.btn_options_close, self._on_options_close_clicked),
         ]
+
+    def _on_tab_train_clicked(self) -> None:
+        self.app_state.right_panel_tab = "train"
+        self.actions.set_status("Panel tab: Train")
+
+    def _on_tab_run_clicked(self) -> None:
+        self.app_state.right_panel_tab = "run"
+        self.actions.set_status("Panel tab: Run")
+
+    def _on_tab_debug_clicked(self) -> None:
+        self.app_state.right_panel_tab = "debug"
+        self.actions.set_status("Panel tab: Debug")
 
     def _on_space_strategy_toggle_clicked(self) -> None:
         enabled = not bool(self.app_state.space_strategy_enabled)
@@ -667,9 +678,6 @@ class SnakeFrameApp:
     def _draw_options_window(self) -> None:
         app_rendering.draw_options_window(self)
 
-    def _draw_shortcuts_list(self, *, panel: pygame.Rect, start_y: int, pad: int) -> None:
-        app_rendering.draw_shortcuts_list(self, panel=panel, start_y=start_y, pad=pad)
-
     @staticmethod
     def _safe_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -695,6 +703,9 @@ class SnakeFrameApp:
         self.app_state.debug_overlay = bool(payload.get("debugOverlay", self.app_state.debug_overlay))
         self.app_state.debug_reachable_overlay = bool(payload.get("debugReachableOverlay", self.app_state.debug_reachable_overlay))
         self.app_state.space_strategy_enabled = bool(payload.get("spaceStrategyEnabled", self.app_state.space_strategy_enabled))
+        tab_name = str(payload.get("rightPanelTab", getattr(self.app_state, "right_panel_tab", "train"))).strip().lower()
+        if tab_name in ("train", "run", "debug"):
+            self.app_state.right_panel_tab = tab_name
         self.game.set_board_background_mode(str(payload.get("boardBackgroundMode", self.game.board_background_mode)))
         self.app_state.snake_style = str(payload.get("snakeStyle", self.app_state.snake_style))
         self.game.set_snake_style(self.app_state.snake_style)
@@ -760,6 +771,7 @@ class SnakeFrameApp:
             "debugOverlay": bool(self.app_state.debug_overlay),
             "debugReachableOverlay": bool(self.app_state.debug_reachable_overlay),
             "spaceStrategyEnabled": bool(self.app_state.space_strategy_enabled),
+            "rightPanelTab": str(getattr(self.app_state, "right_panel_tab", "train")),
             "boardBackgroundMode": str(self.game.board_background_mode),
             "snakeStyle": str(self.game.snake_style),
             "fogDensity": str(self.game.fog_density),
@@ -848,11 +860,11 @@ class SnakeFrameApp:
             self.btn_eval_holdout.enabled = bool(eval_enabled)
         control_policy = self._derive_control_policy()
         if control_policy.run_paused_waiting_snapshot:
-            self.btn_game_start.label = "Start Game (waiting)"
+            self.btn_game_start.label = "Start Wait"
         elif control_policy.manual_can_steer:
-            self.btn_game_start.label = "Start Game (manual)"
+            self.btn_game_start.label = "Start Manual"
         else:
-            self.btn_game_start.label = "Start Game (agent)"
+            self.btn_game_start.label = "Start Agent"
 
     def _append_episode_score(self, score: int) -> None:
         self.app_state.training_episode_scores.append(int(score))
@@ -1021,13 +1033,11 @@ class SnakeFrameApp:
 
     def _build_training_graph_badges(self) -> list[str]:
         scores = [int(v) for v in self.app_state.training_episode_scores]
-        steps_list = [int(v) for v in self.app_state.training_episode_steps]
         snap = self.training.snapshot()
         avg20 = avg_last(scores, 20)
         avg100 = avg_last(scores, 100)
         best = int(max(scores)) if scores else 0
         last = int(scores[-1]) if scores else 0
-        last_steps = int(steps_list[-1]) if steps_list else 0
         ofit = overfit_signal(scores)
         target = max(1, int(snap.target_steps))
         train_deaths = self.app_state.training_death_counts or empty_death_counts()
@@ -1041,15 +1051,13 @@ class SnakeFrameApp:
             f"Total {self._compact_int(snap.current_steps)}",
             f"SPS {sps:.0f}" if sps > 0.0 else "SPS n/a",
             f"ETA {self._format_age_short((float(remaining) / float(sps)) if sps > 0.0 else None)}" if bool(snap.active) else "ETA n/a",
-            f"Eps {self._compact_int(episode_total)}",
             f"Avg20 {avg20:.1f}",
             f"Avg100 {avg100:.1f}",
             f"Best {best}",
             f"Last {last}",
-            f"Stp {last_steps}",
             f"Eval {last_eval:.2f}" if last_eval is not None else "Eval n/a",
-            f"BestEval {best_eval:.2f}@{int(snap.best_eval_step)}" if best_eval is not None else "BestEval n/a",
-            f"D {self._format_death_counts(train_deaths)}",
+            f"BestEval {best_eval:.2f}" if best_eval is not None else "BestEval n/a",
+            f"Eps {self._compact_int(episode_total)}",
             ofit.label,
         ]
 
@@ -1074,9 +1082,6 @@ class SnakeFrameApp:
             f"Last {last}",
             f"Live {live_score}",
             f"Intv {interventions_pct:.1f}%",
-            f"IntvN {int(telemetry.interventions_total)}/{int(telemetry.decisions_total)}",
-            f"Risk {telemetry.pocket_risk_total}",
-            f"Stuck {telemetry.stuck_episodes_total}",
             f"D {self._format_death_counts({'wall': telemetry.deaths_wall, 'body': telemetry.deaths_body, 'starvation': telemetry.deaths_starvation, 'fill': telemetry.deaths_fill, 'other': telemetry.deaths_other})}",
         ]
 

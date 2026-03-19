@@ -24,6 +24,7 @@ class AppState:
     debug_reachable_overlay: bool = False
     space_strategy_enabled: bool = True
     tail_trend_enabled: bool = True
+    right_panel_tab: str = "train"
     training_episode_scores: list[int] = field(default_factory=list)
     training_episode_steps: list[int] = field(default_factory=list)
     training_death_counts: dict[str, int] = field(default_factory=empty_death_counts)
@@ -36,3 +37,6 @@ class AppState:
     last_error_message: str = ""
     last_error_at: float = 0.0
     last_action_result: str = "idle"
+    model_dirty: bool = False
+    model_save_state: str = "unknown"
+    last_model_save_ok_at: float = 0.0

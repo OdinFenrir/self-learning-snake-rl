@@ -136,19 +136,19 @@ class Settings:
     cell_px: int = 54
     fps: int = 60
     ticks_per_move: int = 5
-    left_panel_px: int = 560
-    right_panel_px: int = 700
+    left_panel_px: int = 520
+    right_panel_px: int = 760
     agent_safety_override: bool = True
     window_height_px: int | None = None
     window_borderless: bool = True
     layout_preset: str = "standard"
     theme_name: str = "retro_forest_noir"
-    ui_scale: float = 1.0
+    ui_scale: float = 0.95
     min_cell_px: int = 24
     max_cell_px: int = 72
-    min_left_panel_px: int = 340
-    min_right_panel_px: int = 400
-    left_panel_ratio: float = 0.44
+    min_left_panel_px: int = 330
+    min_right_panel_px: int = 520
+    left_panel_ratio: float = 0.37
     dynamic_control: DynamicControlConfig = field(default_factory=DynamicControlConfig)
 
     def __post_init__(self) -> None:

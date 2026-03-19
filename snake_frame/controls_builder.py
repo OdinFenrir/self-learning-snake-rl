@@ -48,6 +48,9 @@ class ControlsBuildResult:
     btn_debug_toggle: Button
     btn_reachable_toggle: Button
     btn_diagnostics: Button
+    btn_tab_train: Button
+    btn_tab_run: Button
+    btn_tab_debug: Button
 
 
 def build_controls(
@@ -92,19 +95,6 @@ def build_controls(
         panel_width=int(settings.left_panel_px),
     )
     controls_top = int(max(int(tokens.spacing.left_controls_top_padding), graph_top - int(tokens.spacing.left_controls_raise_px)))
-    right_panel_x = int(settings.right_panel_offset_x)
-    graph_layout = build_panel_layout(
-        settings,
-        min_graph_height=min_graph_height,
-        max_graph_height=max_graph_height,
-        graph_margin=graph_margin,
-        graph_top=graph_top,
-        control_row_height=button_row_height,
-        control_gap=button_gap,
-        reserve_for_controls_and_status=24,
-        panel_x=right_panel_x,
-        panel_width=int(settings.right_panel_px),
-    )
     # Use fixed right panel layout for stable KPI dashboard
     right_layout = build_right_panel_layout(settings)
     right_inner_x = right_layout.inner_x
@@ -118,40 +108,68 @@ def build_controls(
     )
 
     y = int(controls_top + input_top_offset + input_height + input_to_buttons_gap)
-    btn_train_start = Button(
-        "Start Train",
-        pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
-        bg=theme.train_start_bg,
-        bg_hover=theme.train_start_hover,
-    )
-    btn_train_stop = Button(
-        "Stop Train",
-        pygame.Rect(
-            controls_layout.x + controls_layout.half_width + controls_layout.gap,
-            y,
-            controls_layout.half_width,
-            controls_layout.row_height,
-        ),
-    )
-
+    use_stacked_pairs = bool(controls_layout.half_width < 140)
+    if use_stacked_pairs:
+        btn_train_start = Button(
+            "Start Train",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+            bg=theme.train_start_bg,
+            bg_hover=theme.train_start_hover,
+        )
+        y += int(controls_layout.row_height + controls_layout.gap)
+        btn_train_stop = Button(
+            "Stop Train",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+        )
+    else:
+        btn_train_start = Button(
+            "Start Train",
+            pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
+            bg=theme.train_start_bg,
+            bg_hover=theme.train_start_hover,
+        )
+        btn_train_stop = Button(
+            "Stop Train",
+            pygame.Rect(
+                controls_layout.x + controls_layout.half_width + controls_layout.gap,
+                y,
+                controls_layout.half_width,
+                controls_layout.row_height,
+            ),
+        )
     y += int(controls_layout.row_height + controls_layout.gap)
-    btn_save = Button(
-        "Save",
-        pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
-        bg=theme.save_bg,
-        bg_hover=theme.save_hover,
-    )
-    btn_load = Button(
-        "Load",
-        pygame.Rect(
-            controls_layout.x + controls_layout.half_width + controls_layout.gap,
-            y,
-            controls_layout.half_width,
-            controls_layout.row_height,
-        ),
-        bg=theme.load_bg,
-        bg_hover=theme.load_hover,
-    )
+    if use_stacked_pairs:
+        btn_save = Button(
+            "Save",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+            bg=theme.save_bg,
+            bg_hover=theme.save_hover,
+        )
+        y += int(controls_layout.row_height + controls_layout.gap)
+        btn_load = Button(
+            "Load",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+            bg=theme.load_bg,
+            bg_hover=theme.load_hover,
+        )
+    else:
+        btn_save = Button(
+            "Save",
+            pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
+            bg=theme.save_bg,
+            bg_hover=theme.save_hover,
+        )
+        btn_load = Button(
+            "Load",
+            pygame.Rect(
+                controls_layout.x + controls_layout.half_width + controls_layout.gap,
+                y,
+                controls_layout.half_width,
+                controls_layout.row_height,
+            ),
+            bg=theme.load_bg,
+            bg_hover=theme.load_hover,
+        )
 
     y += int(controls_layout.row_height + controls_layout.gap)
     btn_delete = Button(
@@ -162,23 +180,38 @@ def build_controls(
     )
 
     y += int(controls_layout.row_height + controls_layout.gap)
-    btn_game_start = Button(
-        "Start Game",
-        pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
-        bg=theme.game_start_bg,
-        bg_hover=theme.game_start_hover,
-    )
-    btn_game_stop = Button(
-        "Stop Game",
-        pygame.Rect(
-            controls_layout.x + controls_layout.half_width + controls_layout.gap,
-            y,
-            controls_layout.half_width,
-            controls_layout.row_height,
-        ),
-        bg=theme.game_stop_bg,
-        bg_hover=theme.game_stop_hover,
-    )
+    if use_stacked_pairs:
+        btn_game_start = Button(
+            "Start Game",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+            bg=theme.game_start_bg,
+            bg_hover=theme.game_start_hover,
+        )
+        y += int(controls_layout.row_height + controls_layout.gap)
+        btn_game_stop = Button(
+            "Stop Game",
+            pygame.Rect(controls_layout.x, y, controls_layout.width, controls_layout.row_height),
+            bg=theme.game_stop_bg,
+            bg_hover=theme.game_stop_hover,
+        )
+    else:
+        btn_game_start = Button(
+            "Start Game",
+            pygame.Rect(controls_layout.x, y, controls_layout.half_width, controls_layout.row_height),
+            bg=theme.game_start_bg,
+            bg_hover=theme.game_start_hover,
+        )
+        btn_game_stop = Button(
+            "Stop Game",
+            pygame.Rect(
+                controls_layout.x + controls_layout.half_width + controls_layout.gap,
+                y,
+                controls_layout.half_width,
+                controls_layout.row_height,
+            ),
+            bg=theme.game_stop_bg,
+            bg_hover=theme.game_stop_hover,
+        )
     y += int(controls_layout.row_height + controls_layout.gap)
     btn_restart = Button(
         "Restart",
@@ -312,6 +345,28 @@ def build_controls(
         bg=theme.reach_off_bg,
         bg_hover=theme.reach_off_hover,
     )
+    tab_gap = 8
+    tab_y = int(right_layout.utility_row_y)
+    tab_h = int(right_layout.utility_row_height)
+    tab_w = max(90, int((right_inner_w - (2 * tab_gap)) // 3))
+    btn_tab_train = Button(
+        "Train",
+        pygame.Rect(right_inner_x, tab_y, tab_w, tab_h),
+        bg=theme.toggle_positive_bg,
+        bg_hover=theme.toggle_positive_hover,
+    )
+    btn_tab_run = Button(
+        "Run",
+        pygame.Rect(right_inner_x + tab_w + tab_gap, tab_y, tab_w, tab_h),
+        bg=theme.toggle_info_bg,
+        bg_hover=theme.toggle_info_hover,
+    )
+    btn_tab_debug = Button(
+        "Debug",
+        pygame.Rect(right_inner_x + ((tab_w + tab_gap) * 2), tab_y, tab_w, tab_h),
+        bg=theme.toggle_info_bg,
+        bg_hover=theme.toggle_info_hover,
+    )
 
     panel_controls = PanelControls(
         generations_input=generations_input,
@@ -341,6 +396,9 @@ def build_controls(
         btn_debug_toggle=btn_debug_toggle,
         btn_reachable_toggle=btn_reachable_toggle,
         btn_diagnostics=btn_diagnostics,
+        btn_tab_train=btn_tab_train,
+        btn_tab_run=btn_tab_run,
+        btn_tab_debug=btn_tab_debug,
     )
     return ControlsBuildResult(
         graph_rect=graph_rect,
@@ -378,4 +436,7 @@ def build_controls(
         btn_eval_mode_controller=btn_eval_mode_controller,
         btn_eval_holdout=btn_eval_holdout,
         btn_diagnostics=btn_diagnostics,
+        btn_tab_train=btn_tab_train,
+        btn_tab_run=btn_tab_run,
+        btn_tab_debug=btn_tab_debug,
     )

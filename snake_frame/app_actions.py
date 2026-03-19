@@ -56,6 +56,11 @@ class AppActions:
         self.ui_state_provider = ui_state_provider
         self.get_theme_name = get_theme_name
         self.set_theme_name = set_theme_name
+        has_model = bool(getattr(self.agent, "is_ready", False))
+        self.app_state.model_dirty = False
+        self.app_state.model_save_state = "saved" if has_model else "no_model"
+        if not has_model:
+            self.app_state.last_model_save_ok_at = 0.0
 
     def set_generations_input(self, generations_input: NumericInputLike) -> None:
         self.generations_input = generations_input
@@ -109,6 +114,8 @@ class AppActions:
         if not started:
             self.set_status("Training already running")
             return
+        self.app_state.model_dirty = True
+        self.app_state.model_save_state = "pending"
         snap = self.training.snapshot()
         self.set_status(
             f"PPO training started (+{int(target_steps)} steps from total {int(snap.start_steps)})"
@@ -211,6 +218,7 @@ class AppActions:
             "tailTrendEnabled": bool(getattr(self.app_state, "tail_trend_enabled", True)),
             "debugOverlay": bool(self.app_state.debug_overlay),
             "debugReachableOverlay": bool(self.app_state.debug_reachable_overlay),
+            "rightPanelTab": str(getattr(self.app_state, "right_panel_tab", "train")),
             "snakeStyle": str(getattr(self.game, "snake_style", getattr(self.app_state, "snake_style", "topdown_3d"))),
             "fogDensity": str(getattr(self.game, "fog_density", getattr(self.app_state, "fog_density", "off"))),
             "savedAt": time.time(),
@@ -251,7 +259,12 @@ class AppActions:
         status = f"Saved UI ({self.state_file.name})"
         if model_saved:
             status += " + PPO model"
+            self.app_state.model_dirty = False
+            self.app_state.model_save_state = "saved"
+            self.app_state.last_model_save_ok_at = time.time()
         else:
+            self.app_state.model_dirty = True
+            self.app_state.model_save_state = "pending"
             if "filesystem" in model_code:
                 status += " (model save filesystem error)"
             else:
@@ -349,6 +362,9 @@ class AppActions:
         self.app_state.debug_reachable_overlay = bool(
             payload.get("debugReachableOverlay", self.app_state.debug_reachable_overlay)
         )
+        tab_name = str(payload.get("rightPanelTab", getattr(self.app_state, "right_panel_tab", "train"))).strip().lower()
+        if tab_name in ("train", "run", "debug"):
+            self.app_state.right_panel_tab = tab_name
         self.app_state.snake_style = str(payload.get("snakeStyle", getattr(self.app_state, "snake_style", "topdown_3d")))
         style_setter = getattr(self.game, "set_snake_style", None)
         if callable(style_setter):
@@ -383,10 +399,15 @@ class AppActions:
             elif "filesystem" in model_code:
                 parts.append("PPO model failed (filesystem)")
             self.set_status("Loaded " + " + ".join(parts))
+            if model_loaded:
+                self.app_state.model_dirty = False
+                self.app_state.model_save_state = "saved"
             return
         if "legacy_format_unsupported" in model_code or "incompatible" in model_code:
             self.set_status("Saved model uses deprecated legacy format; retrain with v2 artifacts", severity="warn")
             return
+        self.app_state.model_save_state = "no_model"
+        self.app_state.model_dirty = False
         self.set_status("No saved UI/model to load", severity="warn")
 
     def handle_load_latest_checkpoint_clicked(self) -> None:
@@ -413,6 +434,8 @@ class AppActions:
                 self.set_status("Checkpoint load failed", severity="warn")
             return
         self.training.reset_tracking_from_agent()
+        self.app_state.model_dirty = False
+        self.app_state.model_save_state = "saved"
         if model_detail:
             self.set_status(f"Loaded latest checkpoint ({model_detail})")
             return
@@ -447,6 +470,10 @@ class AppActions:
             self.set_error("filesystem", "Failed to delete some saved files (filesystem error)")
             return
         if removed_ui or removed_model:
+            if removed_model:
+                self.app_state.model_dirty = False
+                self.app_state.model_save_state = "no_model"
+                self.app_state.last_model_save_ok_at = 0.0
             self.set_status("Deleted saved state/model")
             return
         self.set_status("No state/model to delete", severity="warn")
@@ -463,7 +490,20 @@ class AppActions:
 
     def build_status_lines(self) -> list[str]:
         snap = self.training.snapshot()
-        last_train = "in progress" if snap.active else self.app_state.last_train_message
+        if snap.active:
+            last_train = "running"
+        else:
+            raw_last_train = str(self.app_state.last_train_message or "").strip().lower()
+            if raw_last_train in ("", "no training run yet"):
+                last_train = "none yet"
+            elif raw_last_train.startswith("training complete"):
+                last_train = "complete"
+            elif raw_last_train.startswith("training error"):
+                last_train = "error"
+            elif len(raw_last_train) > 18:
+                last_train = raw_last_train[:15].rstrip() + "..."
+            else:
+                last_train = raw_last_train or "idle"
         inference_available = bool(getattr(self.agent, "is_inference_available", self.agent.is_ready))
         control_policy = derive_control_authority_policy(
             is_ready=bool(getattr(self.agent, "is_ready", False)),
@@ -479,6 +519,7 @@ class AppActions:
         lines = [
             f"Algo: PPO (device={self.agent.device})",
             f"Model: {'ready' if inference_available else ('loaded/no-inference' if self.agent.is_ready else 'none')}",
+            f"Saved: {self._build_model_save_report()}",
             f"Last train: {last_train}",
             f"Game: {'running' if self.app_state.game_running else 'stopped'}",
             f"Control: {control_label}",
@@ -499,6 +540,25 @@ class AppActions:
         if time.perf_counter() < self.app_state.status_until:
             lines.append(f"[{self.app_state.status_severity}] {self.app_state.status_text}")
         return lines
+
+    def _build_model_save_report(self) -> str:
+        save_state = str(getattr(self.app_state, "model_save_state", "unknown")).strip().lower()
+        has_model = bool(getattr(self.agent, "is_ready", False))
+        if not has_model or save_state == "no_model":
+            return "no model on disk"
+        if bool(getattr(self.app_state, "model_dirty", False)) or save_state == "pending":
+            return "unsaved changes"
+        saved_at = float(getattr(self.app_state, "last_model_save_ok_at", 0.0))
+        if saved_at > 0.0:
+            age_s = max(0, int(time.time() - saved_at))
+            if age_s < 60:
+                return "saved (<1m ago)"
+            mins = age_s // 60
+            if mins < 60:
+                return f"saved ({mins}m ago)"
+            hours = mins // 60
+            return f"saved ({hours}h ago)"
+        return "saved"
 
     def build_runtime_health_snapshot(self) -> dict[str, str]:
         ui_state = self.ui_state_provider() if callable(self.ui_state_provider) else None

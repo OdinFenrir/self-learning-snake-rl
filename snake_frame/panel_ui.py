@@ -4,7 +4,7 @@ UI rendering components for the side panels in Snake Frame application.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import OrderedDict
 
 import pygame
@@ -40,13 +40,17 @@ class PanelRenderData:
     run_graph_rect: pygame.Rect
     training_graph_badges: list[str]
     run_graph_badges: list[str]
-    run_status_lines: list[str]
-    settings_lines: list[str]
     # Explicit right panel layout positions
     training_header_y: int
     training_badges_y: int
     run_header_y: int
     run_badges_y: int
+    left_status_lines: list[str] = field(default_factory=list)
+    training_status_lines: list[str] = field(default_factory=list)
+    run_status_lines: list[str] = field(default_factory=list)
+    debug_status_lines: list[str] = field(default_factory=list)
+    settings_lines: list[str] = field(default_factory=list)
+    selected_tab: str = "train"
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,9 @@ class PanelControls:
     btn_debug_toggle: Button
     btn_reachable_toggle: Button
     btn_diagnostics: Button
+    btn_tab_train: Button
+    btn_tab_run: Button
+    btn_tab_debug: Button
 
 
 class SidePanelsRenderer:
@@ -174,57 +181,105 @@ class SidePanelsRenderer:
         panel_h = int(self.settings.window_height_px or self.settings.window_px)
         surface.blit(self._static_background(left_w, board_w, right_w, panel_h), (0, 0))
 
-        right_inner_width = int(self.settings.right_panel_px - 36)
+        right_inner_width = int(max(120, data.training_graph_rect.width))
         right_x = int(data.training_graph_rect.x)
-        
-        # Training KPIs section - use explicit layout positions
-        self._draw_section_header(surface, "Training KPIs", right_x, data.training_header_y)
-        
-        _ = self._draw_graph_badges(
-            surface,
-            start_x=right_x,
-            start_y=data.training_badges_y,
-            max_width=right_inner_width,
-            badges=data.training_graph_badges,
-        )
-        
-        train_graph_rect = pygame.Rect(data.training_graph_rect)
-        pygame.draw.rect(surface, self.theme.graph_bg, train_graph_rect)
-        self.graph.draw(
-            surface,
-            train_graph_rect,
-            data.training_episode_scores,
-            empty_message="Train PPO to build graph.",
-        )
+        mouse_pos = pygame.mouse.get_pos()
+        controls.btn_tab_train.draw(surface, self.small_font, mouse_pos)
+        controls.btn_tab_run.draw(surface, self.small_font, mouse_pos)
+        controls.btn_tab_debug.draw(surface, self.small_font, mouse_pos)
+        selected_tab = str(getattr(data, "selected_tab", "train")).strip().lower()
+        if selected_tab not in ("train", "run", "debug"):
+            selected_tab = "train"
 
-        # Run KPIs section - use explicit layout positions
-        self._draw_section_header(surface, "Run KPIs", right_x, data.run_header_y)
+        if selected_tab == "train":
+            self._draw_section_header(surface, "Training KPIs", right_x, data.training_header_y)
+            badges_end_y = self._draw_graph_badges(
+                surface,
+                start_x=right_x,
+                start_y=data.training_badges_y,
+                max_width=right_inner_width,
+                badges=data.training_graph_badges,
+            )
+            line_h = self._line_height()
+            min_text_rows = max(4, min(8, len(data.training_status_lines) + 1))
+            min_text_area = int((min_text_rows * line_h) + 22)
+            train_graph_rect = pygame.Rect(data.training_graph_rect)
+            train_graph_rect.y = max(int(train_graph_rect.y), int(badges_end_y + 8))
+            max_graph_bottom = int((self.settings.window_height_px or self.settings.window_px) - 16 - min_text_area)
+            if train_graph_rect.bottom > max_graph_bottom:
+                train_graph_rect.height = max(48, int(max_graph_bottom - train_graph_rect.y))
+            pygame.draw.rect(surface, self.theme.graph_bg, train_graph_rect)
+            self.graph.draw(
+                surface,
+                train_graph_rect,
+                data.training_episode_scores,
+                empty_message="Train PPO to build graph.",
+            )
+            self._draw_right_text_block(
+                surface,
+                title="Training Health",
+                x=right_x,
+                y=int(train_graph_rect.bottom + 16),
+                width=right_inner_width,
+                max_bottom=int(self.settings.window_height_px or self.settings.window_px) - 16,
+                lines=list(data.training_status_lines),
+            )
+        elif selected_tab == "run":
+            self._draw_section_header(surface, "Run KPIs", right_x, data.run_header_y)
+            badges_end_y = self._draw_graph_badges(
+                surface,
+                start_x=right_x,
+                start_y=data.run_badges_y,
+                max_width=right_inner_width,
+                badges=data.run_graph_badges,
+            )
+            run_graph_rect = pygame.Rect(data.run_graph_rect)
+            line_h = self._line_height()
+            min_text_rows = max(4, min(8, len(data.run_status_lines) + 1))
+            min_text_area = int((min_text_rows * line_h) + 22)
+            run_graph_rect.y = max(int(run_graph_rect.y), int(badges_end_y + 8))
+            max_graph_bottom = int((self.settings.window_height_px or self.settings.window_px) - 16 - min_text_area)
+            if run_graph_rect.bottom > max_graph_bottom:
+                run_graph_rect.height = max(48, int(max_graph_bottom - run_graph_rect.y))
+            pygame.draw.rect(surface, self.theme.graph_bg, run_graph_rect)
+            self.graph.draw(
+                surface,
+                run_graph_rect,
+                data.run_episode_scores,
+                empty_message="Play/Watch runs to build graph.",
+            )
+            self._draw_right_text_block(
+                surface,
+                title="Run Summary",
+                x=right_x,
+                y=int(run_graph_rect.bottom + 16),
+                width=right_inner_width,
+                max_bottom=int(self.settings.window_height_px or self.settings.window_px) - 16,
+                lines=list(data.run_status_lines),
+            )
+        else:
+            self._draw_right_text_block(
+                surface,
+                title="Debug / Advanced",
+                x=right_x,
+                y=int(data.training_header_y),
+                width=right_inner_width,
+                max_bottom=int(self.settings.window_height_px or self.settings.window_px) - 16,
+                lines=list(data.debug_status_lines or data.settings_lines),
+            )
         
-        _ = self._draw_graph_badges(
-            surface,
-            start_x=right_x,
-            start_y=data.run_badges_y,
-            max_width=right_inner_width,
-            badges=data.run_graph_badges,
+        # Left panel header should be anchored to left controls, not right-panel content.
+        left_header_y = int(
+            max(
+                int(self.tokens.spacing.left_controls_top_padding),
+                int(controls.generations_input.rect.top - self._line_height() - 8),
+            )
         )
-        
-        # Draw run graph
-        run_graph_rect = pygame.Rect(data.run_graph_rect)
-        pygame.draw.rect(surface, self.theme.graph_bg, run_graph_rect)
-        self.graph.draw(
-            surface,
-            run_graph_rect,
-            data.run_episode_scores,
-            empty_message="Play/Watch runs to build graph.",
-        )
-        
-        # Align left panel header with training header for consistent positioning
         self._draw_left_panel_sections(
             surface,
-            data.training_header_y,
+            left_header_y,
             controls,
-            data.run_status_lines,
-            data.settings_lines,
+            data.left_status_lines,
         )
 
     def _draw_left_panel_sections(
@@ -232,8 +287,7 @@ class SidePanelsRenderer:
         surface: pygame.Surface,
         top: int,
         controls: PanelControls,
-        run_status_lines: list[str],
-        settings_lines: list[str],
+        left_status_lines: list[str],
     ) -> None:
         """
         Draw the left panel sections including controls, status, and settings.
@@ -265,10 +319,10 @@ class SidePanelsRenderer:
         if y + line_h >= panel_bottom:
             return
         self._draw_divider(surface, y - 5)
-        self._draw_section_header(surface, "Run Status", 18, y)
+        self._draw_section_header(surface, "Session", 18, y)
         y += line_h
         max_text_w = max(80, int(self.settings.left_panel_px - 36))
-        for line in run_status_lines:
+        for line in left_status_lines:
             if y + line_h > panel_bottom:
                 return
             self._draw_key_value_line(
@@ -281,26 +335,37 @@ class SidePanelsRenderer:
                 value_color=self.theme.status_color,
             )
             y += line_h
-        if settings_lines:
-            y += int(self.tokens.spacing.section_gap // 2)
-            if y + line_h >= panel_bottom:
+
+    def _draw_right_text_block(
+        self,
+        surface: pygame.Surface,
+        *,
+        title: str,
+        x: int,
+        y: int,
+        width: int,
+        max_bottom: int,
+        lines: list[str],
+    ) -> None:
+        line_h = self._line_height()
+        if y + line_h >= max_bottom:
+            return
+        self._draw_divider_right(surface, y - 6, x, width)
+        self._draw_section_header(surface, str(title), int(x), int(y))
+        y += line_h
+        for line in lines:
+            if y + line_h > max_bottom:
                 return
-            self._draw_divider(surface, y - 5)
-            self._draw_section_header(surface, "Settings", 18, y)
+            self._draw_key_value_line(
+                surface,
+                x=int(x),
+                y=int(y),
+                line=str(line),
+                max_width=max(80, int(width)),
+                key_color=self.theme.section_header,
+                value_color=self.theme.status_color,
+            )
             y += line_h
-            for line in settings_lines:
-                if y + line_h > panel_bottom:
-                    return
-                self._draw_key_value_line(
-                    surface,
-                    x=18,
-                    y=y,
-                    line=str(line),
-                    max_width=max_text_w,
-                    key_color=self.theme.section_header,
-                    value_color=self.theme.status_secondary,
-                )
-                y += line_h
 
     def _draw_graph_badges(
         self,
@@ -371,6 +436,11 @@ class SidePanelsRenderer:
         panel_right = int(self.settings.left_panel_px - self.tokens.spacing.panel_inner_pad_x)
         pygame.draw.line(surface, self.theme.divider, (x0, int(y)), (panel_right, int(y)), width=1)
 
+    def _draw_divider_right(self, surface: pygame.Surface, y: int, x: int, width: int) -> None:
+        x0 = int(max(0, x))
+        x1 = int(max(x0 + 1, x + max(1, width)))
+        pygame.draw.line(surface, self.theme.divider, (x0, int(y)), (x1, int(y)), width=1)
+
     def _line_height(self) -> int:
         return max(int(self.tokens.typography.status_line_min_height), int(self.small_font.get_linesize() + 2))
 
@@ -378,7 +448,10 @@ class SidePanelsRenderer:
         key = (left_w, board_w, right_w, panel_h)
         if self._static_bg_cache is not None and self._static_bg_cache[0] == key:
             return self._static_bg_cache[1]
-        static = pygame.Surface((self.settings.window_width_px, panel_h)).convert()
+        static = pygame.Surface((self.settings.window_width_px, panel_h), pygame.SRCALPHA)
+        if pygame.display.get_surface() is not None:
+            static = static.convert_alpha()
+        static.fill((0, 0, 0, 0))
         pygame.draw.rect(static, self.theme.panel_bg, pygame.Rect(0, 0, left_w, panel_h))
         pygame.draw.rect(static, self.theme.panel_bg, pygame.Rect(left_w + board_w, 0, right_w, panel_h))
         for y in range(0, panel_h, 4):
@@ -390,22 +463,6 @@ class SidePanelsRenderer:
             )
             pygame.draw.line(static, shade, (0, y), (left_w, y), 1)
             pygame.draw.line(static, shade, (left_w + board_w, y), (left_w + board_w + right_w, y), 1)
-        pygame.draw.line(static, self.theme.panel_border, (left_w - 1, 0), (left_w - 1, panel_h), 2)
-        pygame.draw.line(static, self.theme.panel_split_highlight, (left_w, 0), (left_w, panel_h), 1)
-        pygame.draw.line(
-            static,
-            self.theme.panel_border,
-            (left_w + board_w, 0),
-            (left_w + board_w, panel_h),
-            2,
-        )
-        pygame.draw.line(
-            static,
-            self.theme.panel_split_highlight,
-            (left_w + board_w - 1, 0),
-            (left_w + board_w - 1, panel_h),
-            1,
-        )
         self._static_bg_cache = (key, static)
         return static
 

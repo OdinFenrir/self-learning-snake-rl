@@ -50,9 +50,11 @@ class Button:
         pygame.draw.rect(surface, highlight, highlight_rect, border_radius=7)
         pygame.draw.rect(surface, (88, 122, 148), self.rect, width=1, border_radius=8)
         text_color = self.fg if self.enabled else (160, 170, 180)
-        text = _safe_render(font, self.label, text_color)
+        max_text_width = max(8, int(self.rect.width - 12))
+        fitted = _fit_text_to_width(font, str(self.label), max_text_width)
+        text = _safe_render(font, fitted, text_color)
         text_rect = text.get_rect(center=self.rect.center)
-        shadow = _safe_render(font, self.label, (14, 22, 30))
+        shadow = _safe_render(font, fitted, (14, 22, 30))
         surface.blit(shadow, text_rect.move(0, 1))
         surface.blit(text, text_rect)
 
@@ -177,3 +179,18 @@ def _safe_render(font: pygame.font.Font, text: str, color: tuple[int, int, int])
     except Exception:
         fallback = pygame.font.SysFont("Arial", 16, bold=True)
         return fallback.render(str(text), True, color)
+
+
+def _fit_text_to_width(font: pygame.font.Font, text: str, max_width: int) -> str:
+    candidate = str(text)
+    if int(font.size(candidate)[0]) <= int(max_width):
+        return candidate
+    ellipsis = "..."
+    if int(font.size(ellipsis)[0]) > int(max_width):
+        return ""
+    while candidate:
+        candidate = candidate[:-1]
+        clipped = candidate.rstrip() + ellipsis
+        if int(font.size(clipped)[0]) <= int(max_width):
+            return clipped
+    return ellipsis

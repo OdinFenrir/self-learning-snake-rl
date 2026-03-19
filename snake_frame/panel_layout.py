@@ -9,56 +9,32 @@ from .settings import Settings
 
 @dataclass(frozen=True)
 class RightPanelLayout:
-    """Fixed-grid layout for the right panel KPI dashboard."""
-    # Top utility row
+    """Responsive grid layout for the right panel KPI dashboard."""
     utility_row_y: int
     utility_row_height: int
-    
-    # Training KPIs section
+
+    # Training KPIs section anchors (used by Train tab)
     training_header_y: int
     training_header_height: int
     training_badges_y: int
     training_badges_height: int
     training_graph_y: int
-    
-    # Run KPIs section  
+
+    # Run KPIs section anchors (used by Run tab)
     run_header_y: int
     run_header_height: int
     run_badges_y: int
     run_badges_height: int
     run_graph_y: int
-    
+
     # Dimensions
     panel_width: int
     inner_x: int
     inner_width: int
-    
+
     # Graph rectangles (calculated)
     training_graph_rect: pygame.Rect
     run_graph_rect: pygame.Rect
-
-
-# Fixed layout constants for right panel
-_UTILITY_ROW_Y = 0
-_UTILITY_ROW_HEIGHT = 0    # Removed top space as requested
-_HEADER_TO_BADGE_GAP = 30  # Increased for more space UNDER header and badges
-_BADGE_TO_GRAPH_GAP = 20   # Increased for more space between badges and graph
-_HEADER_HEIGHT = 24
-_BADGES_HEIGHT = 60
-_SECTION_GAP = 80          # Increased for more space between sections (training KPIs to run KPIs)
-_GRAPH_Y_OFFSET = 2        # Small offset to move graphs down slightly
-
-_RIGHT_PANEL_CONSTANTS = {
-    "standard": {
-        "utility_row_y": _UTILITY_ROW_Y,
-        "utility_row_height": _UTILITY_ROW_HEIGHT,
-        "header_to_badge_gap": _HEADER_TO_BADGE_GAP,
-        "badge_to_graph_gap": _BADGE_TO_GRAPH_GAP,
-        "header_height": _HEADER_HEIGHT,
-        "badges_height": _BADGES_HEIGHT,
-        "section_gap": _SECTION_GAP,
-    },
-}
 
 
 def build_right_panel_layout(
@@ -67,61 +43,57 @@ def build_right_panel_layout(
     panel_width: int | None = None,
     panel_x: int | None = None,
 ) -> RightPanelLayout:
-    """Build a fixed-grid layout for the right panel."""
+    """Build a responsive, non-overlapping grid for the right panel."""
     p_width = int(panel_width if panel_width is not None else settings.right_panel_px)
     p_x = int(panel_x if panel_x is not None else settings.right_panel_offset_x)
-    
-    const = _RIGHT_PANEL_CONSTANTS["standard"]
-    
-    inner_margin = 18
-    inner_x = p_x + inner_margin
-    inner_width = p_width - (inner_margin * 2)
-    
-    # Fixed Y positions
-    utility_y = const["utility_row_y"]
-    utility_h = const["utility_row_height"]
-    
     window_h = int(settings.window_height_px or settings.window_px)
-    
-    # Calculate available space for graphs first
-    # Each section needs: header + header_to_badge_gap + badges + badge_to_graph_gap + graph
-    # Plus section_gap between sections
-    section_overhead = (
-        const["header_height"]
-        + const["header_to_badge_gap"]
-        + const["badges_height"]
-        + const["badge_to_graph_gap"]
-    )
-    total_overhead = (
-        utility_h
-        + section_overhead  # training section overhead
-        + const["section_gap"]  # gap between sections
-        + section_overhead  # run section overhead
-        + 20  # bottom margin
-    )
-    available_for_graphs = window_h - total_overhead
-    graph_h = max(120, available_for_graphs // 2)  # Equal height, minimum 120
-    
-    # Now calculate Y positions based on fixed graph height
-    training_header_y = max(0, utility_y + utility_h)
-    training_header_h = const["header_height"]
-    training_badges_y = training_header_y + training_header_h + const["header_to_badge_gap"]
-    training_badges_h = const["badges_height"]
-    training_graph_y = training_badges_y + training_badges_h + const["badge_to_graph_gap"] + _GRAPH_Y_OFFSET
-    
-    run_header_y = max(0, training_graph_y + graph_h + const["section_gap"])
-    run_header_h = const["header_height"]
-    run_badges_y = run_header_y + run_header_h + const["header_to_badge_gap"]
-    run_badges_h = const["badges_height"]
-    run_graph_y = run_badges_y + run_badges_h + const["badge_to_graph_gap"] + _GRAPH_Y_OFFSET
-    
-    # Use equal heights for both graphs
-    training_graph_h = graph_h
-    run_graph_h = graph_h
-    
+
+    ui_scale = float(getattr(settings, "ui_scale", 1.0))
+    ui_scale = max(0.85, min(1.4, ui_scale))
+    inner_margin = max(12, int(round(18 * ui_scale)))
+    inner_x = p_x + inner_margin
+    inner_width = max(120, int(p_width - (inner_margin * 2)))
+
+    outer_top = max(8, int(round(10 * ui_scale)))
+    outer_bottom = max(8, int(round(12 * ui_scale)))
+
+    utility_y = outer_top
+    utility_h = max(30, int(round(34 * ui_scale)))
+
+    header_h = max(18, int(round(24 * ui_scale)))
+    badges_h = max(34, int(round(58 * ui_scale)))
+    header_to_badge = max(4, int(round(8 * ui_scale)))
+    badge_to_graph = max(6, int(round(10 * ui_scale)))
+    graph_to_text_reserve = max(92, int(round(190 * ui_scale)))
+    min_graph_h = max(72, int(round(110 * ui_scale)))
+
+    content_top = utility_y + utility_h + max(6, int(round(10 * ui_scale)))
+    content_bottom = max(content_top + 80, window_h - outer_bottom)
+
+    training_header_y = content_top
+    training_header_h = header_h
+    training_badges_y = training_header_y + training_header_h + header_to_badge
+    training_badges_h = badges_h
+    training_graph_y = training_badges_y + training_badges_h + badge_to_graph
+
+    graph_space = max(40, content_bottom - training_graph_y)
+    if graph_space <= min_graph_h + 48:
+        training_graph_h = max(36, graph_space - 32)
+    else:
+        training_graph_h = max(min_graph_h, graph_space - graph_to_text_reserve)
+    max_graph_ratio_h = max(80, int(round(window_h * 0.40)))
+    training_graph_h = max(36, min(training_graph_h, graph_space, max_graph_ratio_h))
+
     training_graph_rect = pygame.Rect(inner_x, training_graph_y, inner_width, training_graph_h)
-    run_graph_rect = pygame.Rect(inner_x, run_graph_y, inner_width, run_graph_h)
-    
+
+    # Tabbed right panel: run tab reuses the same content grid for consistency.
+    run_header_y = training_header_y
+    run_header_h = training_header_h
+    run_badges_y = training_badges_y
+    run_badges_h = training_badges_h
+    run_graph_y = training_graph_y
+    run_graph_rect = pygame.Rect(training_graph_rect)
+
     return RightPanelLayout(
         utility_row_y=utility_y,
         utility_row_height=utility_h,
