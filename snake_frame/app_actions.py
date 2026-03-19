@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -210,13 +211,19 @@ class AppActions:
         self.set_status(f"Diagnostics bundle created: {bundle_path.name}{suffix}", severity="warn" if warning_count > 0 else "info")
 
     def handle_save_clicked(self) -> None:
+        requested_experiment: str | None = None
+        current_experiment: str | None = None
         if callable(self.switch_experiment):
             selected = self._choose_experiment_for_save()
             if selected is None:
                 self.set_status("Save canceled", severity="warn")
                 return
-            if not self._switch_experiment_if_needed(selected):
-                return
+            requested_experiment = str(selected).strip()
+            if callable(self.get_experiment_name):
+                try:
+                    current_experiment = str(self.get_experiment_name() or "").strip()
+                except Exception:
+                    current_experiment = None
         if not self.can_mutate_storage("save"):
             return
         if self.ui_state_provider is not None:
@@ -300,9 +307,34 @@ class AppActions:
             self.app_state.last_error_code = "cleanup_warning"
             self.app_state.last_error_message = "; ".join(save_result.cleanup_warnings[:2])
             self.app_state.last_error_at = time.time()
+        if (
+            model_saved
+            and requested_experiment
+            and current_experiment
+            and requested_experiment != current_experiment
+            and callable(self.switch_experiment)
+        ):
+            cloned = self._clone_experiment_artifacts(current_experiment, requested_experiment)
+            if not cloned:
+                self.set_status(
+                    f"{status}; failed to copy artifacts to {requested_experiment}",
+                    severity="warn",
+                )
+                return
+            switched = self._switch_experiment_if_needed(requested_experiment)
+            if not switched:
+                self.set_status(
+                    f"{status}; copied to {requested_experiment} but failed to switch",
+                    severity="warn",
+                )
+                return
+            self.set_status(f"{status}; copied to {requested_experiment}", severity="info")
+            return
         self.set_status(status, severity="info" if model_saved else "warn")
 
     def handle_load_clicked(self) -> None:
+        if not self.can_mutate_storage("load"):
+            return
         if callable(self.switch_experiment):
             selected = self._choose_existing_experiment(title="Select experiment folder to load")
             if selected is None:
@@ -310,8 +342,6 @@ class AppActions:
                 return
             if not self._switch_experiment_if_needed(selected):
                 return
-        if not self.can_mutate_storage("load"):
-            return
         try:
             state_result = load_ui_state_result(self.state_file)
         except OSError:
@@ -476,6 +506,8 @@ class AppActions:
         self.set_status("Loaded latest checkpoint")
 
     def handle_delete_clicked(self) -> None:
+        if not self.can_mutate_storage("delete"):
+            return
         if callable(self.switch_experiment):
             selected = self._choose_existing_experiment(title="Select experiment folder to delete")
             if selected is None:
@@ -483,8 +515,6 @@ class AppActions:
                 return
             if not self._switch_experiment_if_needed(selected):
                 return
-        if not self.can_mutate_storage("delete"):
-            return
         delete_result = None
         removed_ui = False
         ui_error = False
@@ -768,3 +798,24 @@ class AppActions:
             return False
         self.set_status(f"Experiment: {desired}")
         return True
+
+    def _clone_experiment_artifacts(self, source_experiment: str, target_experiment: str) -> bool:
+        source = self._state_root() / str(source_experiment)
+        target = self._state_root() / str(target_experiment)
+        if source.resolve() == target.resolve():
+            return True
+        if not source.exists():
+            self.set_status(f"Source experiment not found: {source_experiment}", severity="warn")
+            return False
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+            return True
+        except OSError:
+            logger.exception(
+                "Failed cloning experiment artifacts from %s to %s",
+                source,
+                target,
+            )
+            return False

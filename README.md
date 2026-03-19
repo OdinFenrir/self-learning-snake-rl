@@ -216,6 +216,7 @@ Useful scripts:
 - `scripts/controller_candidate_gate.py`
 - `scripts/blind_spot_replay.py`
 - `scripts/blind_spot_replay_view.py`
+- `scripts/training_input/build_training_input_report.py` (training-input-only report)
 
 Controller suite contract (automatic):
 - `controller_on` summaries now emit:
@@ -236,6 +237,19 @@ Blind-spot replay one-shot (Windows):
 - Generates:
   - `artifacts/live_eval/blind_spot_replay_latest.json`
   - `artifacts/live_eval/blind_spot_replay_latest.html`
+
+Training-input report one-shot (Windows):
+- `run_training_input_report.bat`
+- Generates:
+  - `artifacts/training_input/training_input_latest.json`
+  - `artifacts/training_input/training_input_latest.md`
+  - `artifacts/training_input/training_input_checkpoint_vecnorm_latest.csv`
+  - `artifacts/training_input/training_input_timeline_latest.json`
+  - `artifacts/training_input/training_input_timeline_latest.md`
+  - `artifacts/training_input/training_input_timeline_latest.csv`
+  - `artifacts/training_input/training_input_dashboard_latest.html` (interactive charts)
+  - `artifacts/reports/reports_hub_latest.md` (single organized hub)
+  - `artifacts/reports/reports_hub_latest.txt` (plain-text copy/paste)
 
 ## Evaluation Protocol + Baseline Tracking
 
