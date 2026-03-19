@@ -8,7 +8,6 @@ set "SCRIPT_REPORT=%ROOT%scripts\agent_performance\build_agent_performance_repor
 set "SCRIPT_VISUALS=%ROOT%scripts\agent_performance\build_agent_performance_visuals.py"
 set "SCRIPT_HUB=%ROOT%scripts\reporting\build_reports_hub.py"
 set "DASH_HTML=%ROOT%artifacts\agent_performance\agent_performance_dashboard_latest.html"
-set "HUB_TXT=%ROOT%artifacts\reports\reports_hub_latest.txt"
 
 if not exist "%PYTHON%" (
   echo Python not found at "%PYTHON%".
@@ -48,9 +47,6 @@ echo   artifacts\reports\reports_hub_latest.txt
 
 if exist "%DASH_HTML%" (
   start "" "%DASH_HTML%"
-)
-if exist "%HUB_TXT%" (
-  start "" notepad.exe "%HUB_TXT%"
 )
 
 endlocal

@@ -9,7 +9,6 @@ set "SCRIPT_TIMELINE=%ROOT%scripts\training_input\build_training_input_timeline.
 set "SCRIPT_VISUALS=%ROOT%scripts\training_input\build_training_input_visuals.py"
 set "SCRIPT_HUB=%ROOT%scripts\reporting\build_reports_hub.py"
 set "DASH_HTML=%ROOT%artifacts\training_input\training_input_dashboard_latest.html"
-set "HUB_TXT=%ROOT%artifacts\reports\reports_hub_latest.txt"
 
 if not exist "%PYTHON%" (
   echo Python not found at "%PYTHON%".
@@ -59,9 +58,6 @@ echo   artifacts\reports\reports_hub_latest.txt
 
 if exist "%DASH_HTML%" (
   start "" "%DASH_HTML%"
-)
-if exist "%HUB_TXT%" (
-  start "" notepad.exe "%HUB_TXT%"
 )
 
 endlocal
