@@ -9,6 +9,10 @@ def handle_global_event(app, event: pygame.event.Event) -> bool:
     if event.type == pygame.QUIT:
         return True
     if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_ESCAPE:
+            app._return_to_workspace_menu = True
+            app.actions.set_status("Returning to workspace menu")
+            return True
         if event.key == pygame.K_F10:
             was_fullscreen = bool(app._is_fullscreen)
             app._is_fullscreen = False

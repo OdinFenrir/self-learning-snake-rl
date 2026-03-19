@@ -3,7 +3,7 @@ from __future__ import annotations
 import pygame
 
 
-def run_loop(app) -> None:
+def run_loop(app) -> bool:
     running = True
     try:
         while running:
@@ -48,3 +48,4 @@ def run_loop(app) -> None:
             holdout_eval.close()
         app.training.close()
         pygame.quit()
+    return bool(getattr(app, "_return_to_workspace_menu", False))

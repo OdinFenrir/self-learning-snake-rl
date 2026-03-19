@@ -41,7 +41,7 @@ class SnakeFrameApp:
     _LIVE_TPM_MAX: int = 12
     _HOLDOUT_MAX_STEPS: int = 5000
 
-    def __init__(self) -> None:
+    def __init__(self, *, startup_route: str | None = None) -> None:
         self.settings = Settings()
         self.settings.theme_name = normalize_theme_name(getattr(self.settings, "theme_name", ""))
         self.theme = get_theme(getattr(self.settings, "theme_name", ""))
@@ -61,6 +61,7 @@ class SnakeFrameApp:
             window_flags,
         )
         self.clock = pygame.time.Clock()
+        self._return_to_workspace_menu = False
         self.font = pygame.font.SysFont(
             self.design_tokens.typography.title_family,
             int(self.design_tokens.typography.title_size),
@@ -140,6 +141,7 @@ class SnakeFrameApp:
         self._runtime_health_next_refresh_s = 0.0
         self._runtime_health_cached_lines: list[str] = []
         restored = self._load_ui_preferences()
+        self._apply_startup_route(startup_route)
         startup_warnings = self._run_startup_self_checks()
         if startup_warnings:
             self.actions.set_status(
@@ -152,6 +154,18 @@ class SnakeFrameApp:
             self.actions.set_status("UI preferences restored")
         else:
             self.actions.set_status("New session (blank). Use Load to restore state/model.")
+
+    def _apply_startup_route(self, startup_route: str | None) -> None:
+        route = str(startup_route or "").strip().lower()
+        if route == "settings":
+            self.app_state.options_open = True
+            return
+        if route == "analysis_tools":
+            self.app_state.options_open = False
+            self.app_state.right_panel_tab = "run"
+            return
+        if route == "live_training":
+            self.app_state.options_open = False
 
     def _build_controls(self) -> None:
         controls = build_controls(
@@ -667,8 +681,8 @@ class SnakeFrameApp:
             logger.exception("Failed switching experiment runtime to %s", name)
             return False
 
-    def run(self) -> None:
-        app_orchestrator.run_loop(self)
+    def run(self) -> bool:
+        return bool(app_orchestrator.run_loop(self))
 
     def _handle_global_event(self, event: pygame.event.Event) -> bool:
         return app_events.handle_global_event(self, event)
@@ -1205,5 +1219,5 @@ class SnakeFrameApp:
             self.actions.set_status(f"Theme set to {self.theme.name}")
 
 
-def run() -> None:
-    SnakeFrameApp().run()
+def run(*, startup_route: str | None = None) -> bool:
+    return bool(SnakeFrameApp(startup_route=startup_route).run())
