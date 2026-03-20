@@ -396,8 +396,8 @@ def show_welcome_window() -> WelcomeRoute | None:
 
         tools_btn_h = 34
         if active_tool.key == "blind_spot":
-            run_button_text = "Generate New Replay (Slow)"
-            view_button_text = "Open Existing Replay (Fast)"
+            run_button_text = "Rebuild (Slow)"
+            view_button_text = "Open Saved (Fast)"
         else:
             run_button_text = "Run"
             view_button_text = "View Latest"
@@ -992,32 +992,18 @@ def show_welcome_window() -> WelcomeRoute | None:
                 radius=8,
             )
             if sel.key == "blind_spot":
-                run_text = "Generate New Replay (Slow)"
-                view_text = "Open Existing Replay (Fast)"
-                hint_rect = pygame.Rect(
-                    right_rect.x + 12,
-                    max(detail_y + 182, tools_run_btn.y - 42),
-                    right_rect.width - 24,
-                    30,
-                )
-                _draw_box(
-                    surface,
-                    hint_rect,
-                    bg=_shade(theme.toggle_info_bg, 6),
-                    border=_shade(theme.panel_border, 24),
-                    width=1,
-                    radius=8,
-                )
-                hint_label = item_font.render(
-                    _fit_text(item_font, action_hint_text, hint_rect.width - 14),
+                run_text = "Rebuild (Slow)"
+                view_text = "Open Saved (Fast)"
+                helper = small_font.render(
+                    _fit_text(small_font, "Slow = rebuild from eval | Fast = open current saved replay", right_rect.width - 24),
                     True,
                     theme.badge_text,
                 )
                 surface.blit(
-                    hint_label,
+                    helper,
                     (
-                        hint_rect.x + (hint_rect.width - hint_label.get_width()) // 2,
-                        hint_rect.y + (hint_rect.height - hint_label.get_height()) // 2,
+                        right_rect.x + 12,
+                        tools_run_btn.y - helper.get_height() - 8,
                     ),
                 )
             else:
