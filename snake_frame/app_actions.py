@@ -244,8 +244,10 @@ class AppActions:
         payload = {
             "episodeScores": scores,
             "trainingEpisodeScores": scores,
+            "trainingEpisodeSteps": [int(v) for v in self.app_state.training_episode_steps],
             "runEpisodeScores": [int(v) for v in self.game.episode_scores],
             "trainingDeathCounts": self._sanitize_death_counts(self.app_state.training_death_counts),
+            "lastTrainMessage": str(getattr(self.app_state, "last_train_message", "No training run yet")),
             "trainingTarget": int(snap.target_steps),
             "trainingCurrent": int(snap.current_steps),
             "gameRunning": bool(self.app_state.game_running),
@@ -435,9 +437,17 @@ class AppActions:
         loaded_run_scores = self._sanitize_episode_scores(
             payload.get("runEpisodeScores", payload.get("episodeScores"))
         )
+        loaded_training_steps = self._sanitize_episode_scores(payload.get("trainingEpisodeSteps"))
         self.app_state.training_episode_scores = list(loaded_training_scores)
+        self.app_state.training_episode_steps = list(loaded_training_steps)
         self.app_state.training_death_counts = self._sanitize_death_counts(payload.get("trainingDeathCounts"))
+        loaded_last_train_message = str(payload.get("lastTrainMessage", "") or "").strip()
+        if loaded_last_train_message:
+            self.app_state.last_train_message = loaded_last_train_message
+        else:
+            self.app_state.last_train_message = "No training run yet"
         self.game.episode_scores = list(loaded_run_scores)
+        self._hydrate_training_debug_from_trace_if_missing(payload)
         self.app_state.ui_state_version = self._sanitize_int(
             payload.get("uiStateVersion"),
             default=2,
@@ -502,6 +512,55 @@ class AppActions:
         self.app_state.model_save_state = "no_model"
         self.app_state.model_dirty = False
         self.set_status("No saved UI/model to load", severity="warn")
+
+    def _current_experiment_name(self) -> str:
+        if not callable(self.get_experiment_name):
+            return ""
+        try:
+            return str(self.get_experiment_name() or "").strip()
+        except Exception:
+            return ""
+
+    def _latest_training_trace_summary(self) -> dict[str, Any] | None:
+        exp = self._current_experiment_name()
+        if not exp:
+            return None
+        trace_path = self.state_file.parent / "ppo" / exp / "training_trace.jsonl"
+        if not trace_path.exists():
+            return None
+        last_obj: dict[str, Any] | None = None
+        try:
+            for line in trace_path.read_text(encoding="utf-8").splitlines():
+                text = str(line).strip()
+                if not text:
+                    continue
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    last_obj = obj
+        except OSError:
+            return None
+        return last_obj
+
+    def _hydrate_training_debug_from_trace_if_missing(self, payload: dict[str, Any]) -> None:
+        have_last_train = bool(str(payload.get("lastTrainMessage", "") or "").strip())
+        deaths = dict(getattr(self.app_state, "training_death_counts", {}) or {})
+        have_deaths = any(int(v) > 0 for v in deaths.values())
+        if have_last_train and have_deaths:
+            return
+        summary = self._latest_training_trace_summary()
+        if not isinstance(summary, dict):
+            return
+        if not have_last_train:
+            episodes_total = int(summary.get("episodes_total", 0) or 0)
+            if episodes_total > 0:
+                self.app_state.last_train_message = f"Training complete ({episodes_total} eps)"
+        if not have_deaths:
+            death_obj = summary.get("deaths")
+            if isinstance(death_obj, dict):
+                self.app_state.training_death_counts = self._sanitize_death_counts(death_obj)
 
     def handle_load_latest_checkpoint_clicked(self) -> None:
         if not self.can_mutate_storage("load"):
