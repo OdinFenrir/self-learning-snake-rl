@@ -60,3 +60,29 @@ def test_pick_first_existing_output_is_deterministic_by_declared_order() -> None
         chosen = pick_first_existing_output(root, ("b.txt", "a.txt"))
         assert chosen is not None
         assert chosen.name == "b.txt"
+
+
+def test_report_artifact_manager_command_does_not_require_experiment_dirs() -> None:
+    tools = build_tools("Test_1", "baseline")
+    manager = next(t for t in tools if t.key == "report_artifacts")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch("snake_frame.analysis_tool_commands.project_root", return_value=root):
+            cmds = build_tool_commands(manager, left_exp="", right_exp="")
+    flat = " ".join(" ".join(cmd) for cmd in cmds)
+    assert "scripts/reporting/manage_report_artifacts.py" in flat
+    assert "--apply" in flat
+    assert "--retain-stamped 5" in flat
+
+
+def test_report_artifact_purge_command_uses_purge_all_mode() -> None:
+    tools = build_tools("Test_1", "baseline")
+    manager = next(t for t in tools if t.key == "report_artifacts_purge")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch("snake_frame.analysis_tool_commands.project_root", return_value=root):
+            cmds = build_tool_commands(manager, left_exp="", right_exp="")
+    flat = " ".join(" ".join(cmd) for cmd in cmds)
+    assert "scripts/reporting/manage_report_artifacts.py" in flat
+    assert "--apply" in flat
+    assert "--purge-all" in flat

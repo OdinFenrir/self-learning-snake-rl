@@ -52,7 +52,8 @@ def _validate_experiment_exists(root: Path, exp_name: str, label: str) -> None:
 def build_tool_commands(spec: ToolSpec, *, left_exp: str, right_exp: str) -> list[tuple[str, ...]]:
     root = project_root()
     py = python_exe(root)
-    _validate_experiment_exists(root, left_exp, "Model 1")
+    if spec.key not in ("report_artifacts", "report_artifacts_purge"):
+        _validate_experiment_exists(root, left_exp, "Model 1")
     if spec.key == "phase3_compare":
         _validate_experiment_exists(root, right_exp, "Model 2")
 
@@ -176,6 +177,39 @@ def build_tool_commands(spec: ToolSpec, *, left_exp: str, right_exp: str) -> lis
                 "--out-dir",
                 "artifacts/reports",
             ),
+        ]
+
+    if spec.key == "report_artifacts":
+        return [
+            (
+                py,
+                "scripts/reporting/manage_report_artifacts.py",
+                "--retain-stamped",
+                "5",
+                "--apply",
+                "--families",
+                "training_input,agent_performance,phase3_compare,reports_hub",
+                "--out-dir",
+                "artifacts/reports",
+                "--tag",
+                "latest",
+            )
+        ]
+
+    if spec.key == "report_artifacts_purge":
+        return [
+            (
+                py,
+                "scripts/reporting/manage_report_artifacts.py",
+                "--apply",
+                "--purge-all",
+                "--families",
+                "training_input,agent_performance,phase3_compare,reports_hub",
+                "--out-dir",
+                "artifacts/reports",
+                "--tag",
+                "latest",
+            )
         ]
 
     if spec.key == "blind_spot":

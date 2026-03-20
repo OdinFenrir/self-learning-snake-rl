@@ -54,6 +54,28 @@ def build_tools(left_exp: str, right_exp: str) -> list[ToolSpec]:
             embeddable=True,
         ),
         ToolSpec(
+            key="report_artifacts",
+            label="Report Artifact Manager",
+            category="Reports",
+            description="Prune old stamped report files and keep latest + last N per report type",
+            outputs=(
+                "artifacts/reports/report_artifact_cleanup_latest.md",
+                "artifacts/reports/report_artifact_cleanup_latest.json",
+            ),
+            embeddable=True,
+        ),
+        ToolSpec(
+            key="report_artifacts_purge",
+            label="Purge Report Artifacts",
+            category="Reports",
+            description="Hard-delete all report artifacts under canonical report folders",
+            outputs=(
+                "artifacts/reports/report_artifact_cleanup_latest.md",
+                "artifacts/reports/report_artifact_cleanup_latest.json",
+            ),
+            embeddable=True,
+        ),
+        ToolSpec(
             key="blind_spot",
             label="Failure Replay",
             category="Diagnostics",
