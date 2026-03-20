@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Literal
 import webbrowser
 
@@ -13,6 +15,7 @@ import pygame
 from .analysis_tool_catalog import ToolSpec, build_tools
 from .analysis_tool_commands import build_tool_commands, list_experiments, project_root
 from .analysis_tool_runner import pick_first_existing_output, read_output_preview, run_commands
+from .gate_runner import run_quick_gate_detailed
 from .model_manager import (
     delete_model,
     list_archives,
@@ -25,6 +28,33 @@ from .theme import get_theme, normalize_theme_name
 WelcomeRoute = Literal["live_training", "settings"]
 ScreenState = Literal["menu", "tools", "viewer", "manager"]
 WORKSPACE_APP_NAME = "Snake RL Research Lab"
+logger = logging.getLogger(__name__)
+
+
+def _enforce_quick_gate_for_action(action_name: str, *, cycles: int = 3) -> tuple[bool, str]:
+    action = str(action_name or "").strip() or "action"
+    result = run_quick_gate_detailed(cycles=max(1, int(cycles)))
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    if bool(result.ok):
+        logger.info(
+            "[GATE] %s PASS action=%s rc=%s",
+            stamp,
+            action,
+            int(result.returncode),
+        )
+        return True, ""
+    logger.warning(
+        "[GATE] %s FAIL action=%s rc=%s stdout_tail=%r stderr_tail=%r",
+        stamp,
+        action,
+        int(result.returncode),
+        str(result.stdout_tail),
+        str(result.stderr_tail),
+    )
+    msg = f"Quick reliability gate FAILED at {stamp}. {action} blocked."
+    if result.stderr_tail:
+        msg = f"{msg} {result.stderr_tail}"
+    return False, msg
 
 
 def _project_root() -> Path:
@@ -395,6 +425,16 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 manager_promote_confirm_until_s = now_s + 8.0
                                 status_text = f"Promote armed for {manager_selected_model}. Click again within 8s to confirm."
                             else:
+                                gate_ok, gate_msg = _enforce_quick_gate_for_action("promote_baseline", cycles=3)
+                                if not gate_ok:
+                                    status_text = gate_msg
+                                    manager_promote_confirm_model = ""
+                                    manager_promote_confirm_until_s = 0.0
+                                    manager_delete_confirm_model = ""
+                                    manager_delete_confirm_until_s = 0.0
+                                    manager_recover_confirm_archive = ""
+                                    manager_recover_confirm_until_s = 0.0
+                                    continue
                                 result = promote_to_baseline(root / "state", manager_selected_model)
                                 status_text = result.message
                                 manager_promote_confirm_model = ""
@@ -417,6 +457,17 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 manager_delete_confirm_until_s = now_s + 8.0
                                 status_text = f"Delete armed for {manager_selected_model}. Click Delete again within 8s to confirm."
                             else:
+                                if str(manager_selected_model).strip().lower() == "baseline":
+                                    gate_ok, gate_msg = _enforce_quick_gate_for_action("delete_baseline", cycles=3)
+                                    if not gate_ok:
+                                        status_text = gate_msg
+                                        manager_delete_confirm_model = ""
+                                        manager_delete_confirm_until_s = 0.0
+                                        manager_promote_confirm_model = ""
+                                        manager_promote_confirm_until_s = 0.0
+                                        manager_recover_confirm_archive = ""
+                                        manager_recover_confirm_until_s = 0.0
+                                        continue
                                 result = delete_model(
                                     root / "state",
                                     manager_selected_model,
@@ -445,6 +496,16 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 manager_recover_confirm_until_s = now_s + 8.0
                                 status_text = f"Recover model-only armed for {archive_key}. Click again within 8s to confirm."
                             else:
+                                gate_ok, gate_msg = _enforce_quick_gate_for_action("recover_baseline_model_only", cycles=3)
+                                if not gate_ok:
+                                    status_text = gate_msg
+                                    manager_recover_confirm_archive = ""
+                                    manager_recover_confirm_until_s = 0.0
+                                    manager_delete_confirm_model = ""
+                                    manager_delete_confirm_until_s = 0.0
+                                    manager_promote_confirm_model = ""
+                                    manager_promote_confirm_until_s = 0.0
+                                    continue
                                 result = recover_baseline(root / "state", manager_selected_archive, include_artifacts=False)
                                 status_text = result.message
                                 manager_recover_confirm_archive = ""
@@ -469,6 +530,16 @@ def show_welcome_window() -> WelcomeRoute | None:
                                 manager_recover_confirm_until_s = now_s + 8.0
                                 status_text = f"Recover workspace snapshot armed for {archive_key}. Click again within 8s to confirm."
                             else:
+                                gate_ok, gate_msg = _enforce_quick_gate_for_action("recover_baseline_workspace", cycles=3)
+                                if not gate_ok:
+                                    status_text = gate_msg
+                                    manager_recover_confirm_archive = ""
+                                    manager_recover_confirm_until_s = 0.0
+                                    manager_delete_confirm_model = ""
+                                    manager_delete_confirm_until_s = 0.0
+                                    manager_promote_confirm_model = ""
+                                    manager_promote_confirm_until_s = 0.0
+                                    continue
                                 result = recover_baseline(root / "state", manager_selected_archive, include_artifacts=True)
                                 status_text = result.message
                                 manager_recover_confirm_archive = ""
