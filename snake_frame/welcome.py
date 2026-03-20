@@ -935,8 +935,9 @@ def show_welcome_window() -> WelcomeRoute | None:
                 action_hint_text = "Fast opens last saved replay. Slow rebuilds replay from latest eval artifacts."
             else:
                 action_hint_text = "Run = generate/update outputs. View Latest = open existing outputs."
-            action_hint = small_font.render(_fit_text(small_font, action_hint_text, right_rect.width - 24), True, theme.status_secondary)
-            surface.blit(action_hint, (right_rect.x + 12, detail_y + 96))
+            if sel.key != "blind_spot":
+                action_hint = small_font.render(_fit_text(small_font, action_hint_text, right_rect.width - 24), True, theme.status_secondary)
+                surface.blit(action_hint, (right_rect.x + 12, detail_y + 96))
 
             try:
                 resolved_cmds = build_tool_commands(sel, left_exp=left_exp, right_exp=right_exp)
@@ -993,6 +994,32 @@ def show_welcome_window() -> WelcomeRoute | None:
             if sel.key == "blind_spot":
                 run_text = "Generate New Replay (Slow)"
                 view_text = "Open Existing Replay (Fast)"
+                hint_rect = pygame.Rect(
+                    right_rect.x + 12,
+                    max(detail_y + 182, tools_run_btn.y - 42),
+                    right_rect.width - 24,
+                    30,
+                )
+                _draw_box(
+                    surface,
+                    hint_rect,
+                    bg=_shade(theme.toggle_info_bg, 6),
+                    border=_shade(theme.panel_border, 24),
+                    width=1,
+                    radius=8,
+                )
+                hint_label = item_font.render(
+                    _fit_text(item_font, action_hint_text, hint_rect.width - 14),
+                    True,
+                    theme.badge_text,
+                )
+                surface.blit(
+                    hint_label,
+                    (
+                        hint_rect.x + (hint_rect.width - hint_label.get_width()) // 2,
+                        hint_rect.y + (hint_rect.height - hint_label.get_height()) // 2,
+                    ),
+                )
             else:
                 run_text = "Run"
                 view_text = "View Latest"
