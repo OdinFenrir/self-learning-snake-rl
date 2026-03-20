@@ -2,18 +2,20 @@
 
 ## Experiment Isolation
 
-- **Baseline runs**: use `baseline` (the default)
+- **Startup is detached by default**: no experiment is auto-loaded on app start
+- **Baseline runs**: use `baseline` explicitly via `Load`/`Save`
 - **New experiments**: must use a distinct experiment name (for example `baseline_experiment_a`)
 - **Never train into baseline without preserving baseline first**
 - **Use explicit experiment targeting for model actions** (`Save` / `Load` / `Delete`)
 - **Do not assume current slot**: confirm the selected experiment before any save/delete
+- **Use Model Manager for baseline lifecycle**: promote/recover/delete with built-in confirmations and quick-gate blocking.
 
 ## Canonical Baseline
 
 For the current verified baseline, see `TRUSTED_BASELINES.md`.
 
 Summary:
-- **Baseline experiment:** `baseline` (default)
+- **Baseline experiment:** `baseline` (canonical reference experiment; not auto-loaded at startup)
 - **Observation schema:** 31-dim (all ObsConfig flags = true)
 - **Baseline metrics:** pending fresh suite generation in this new cycle
 - **Trust cutoff:** commit `cc22fee` onward for artifact-discipline rules

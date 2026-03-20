@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-`Snake Frame PPO Lab` is a single-desktop Python application that combines:
+`Snake RL Research Lab` is a single-desktop Python application that combines:
 - interactive gameplay and rendering (`pygame`)
 - PPO training/inference (`stable-baselines3` + `sb3-contrib`)
 - a safety/controller layer that can arbitrate policy actions
@@ -27,7 +27,14 @@ Core runtime modules:
 - `snake_frame/training.py`: threaded training controller
 - `snake_frame/holdout_eval.py`: holdout eval orchestration (`ppo_only`/`controller_on`)
 - `snake_frame/state_io.py`: UI state schema and recovery behavior
+- `snake_frame/welcome.py`: workspace router (`Live Training`, `Analysis Tools`, `Model Manager`, `Settings`)
+- `snake_frame/gate_runner.py`: quick reliability gate wrapper used to block unsafe model-manager actions
 - `snake_frame/app_rendering.py`, `panel_ui.py`, `graph_renderer.py`: dashboard rendering
+
+Startup semantics:
+- app starts in detached mode (`_detached_session`)
+- no experiment is auto-loaded at startup
+- binding to a real experiment happens only through explicit `Load`/`Save`
 
 ## 3. Decision Stack (Agent Intelligence)
 
@@ -111,6 +118,9 @@ Contract guarantees:
 - stamped retention policy (`latest` + last `N`, default `N=5`)
 - no writes outside canonical family roots
 - compare tooling requires explicit Model 1 + Model 2 selection (no silent defaults)
+- in-app report cleanup supports:
+  - retention prune (`report_artifacts`)
+  - hard purge (`report_artifacts_purge`)
 
 Authoritative contract: `docs/REPORT_TOOLING_CONTRACT.md`.
 

@@ -1,4 +1,4 @@
-# Self-Learning Snake RL
+# Snake RL Research Lab
 
 An interactive Snake RL lab built with `pygame` and PPO.  
 The goal is simple: train an agent, watch it play live, measure failures, and iteratively improve behavior with reproducible data.
@@ -172,6 +172,7 @@ For trustworthy comparisons, cite:
 - Workspace entry screen:
   - `Live Training` (main game/training UI)
   - `Analysis Tools` (report runners + in-app output viewer)
+  - `Model Manager` (promote/archive/recover/delete model workflows)
   - `Application Settings` (opens options panel)
   - `Esc` from live app returns to workspace menu
 - `Start Train` / `Stop Train`
@@ -191,6 +192,8 @@ For trustworthy comparisons, cite:
 - `Training Quality Report` (single model)
 - `Agent Runtime Report` (single model)
 - `Model vs Model Compare` (Model 1 vs Model 2)
+- `Report Artifact Manager` (retain `latest` + last N stamped files)
+- `Purge Report Artifacts` (hard-delete canonical report artifacts)
 - `Failure Replay`
 - `Evaluation Suite`
 - `Policy 3D Explorer`
@@ -206,11 +209,17 @@ Execution model:
 
 ### Model Safety Workflow
 
+- Startup mode is detached by default:
+  - `Experiment: New (not loaded)`
+  - `Model: none`
+  - `Saved: no model on disk`
+  - App does not auto-bind to previous experiment on startup.
+- A real experiment is bound only after explicit `Load` or `Save`.
 - `Save`: prompts for experiment name and saves into `state/ppo/<experiment_name>/`
 - `Load`/`Delete`: open a folder picker under `state/ppo/` to target an explicit experiment
 - `Save` is blocked when no model is loaded/trained
-- The active experiment is persisted in UI preferences and restored on startup
 - This prevents accidental overwrite of a different experiment's `last_model.zip`
+- Model Manager destructive baseline actions are guarded by quick reliability gate checks.
 
 ## Persistence
 
@@ -221,7 +230,8 @@ Saved artifacts (default baseline path shown):
 - `state/ppo/<experiment_name>/arbiter_model.json`
 - `state/ppo/<experiment_name>/tactic_memory.json`
 
-By default, the app uses `experiment_name = "baseline"`, so baseline runs write to `state/ppo/baseline/`.
+The app starts detached (`_detached_session`) and does not load baseline automatically.
+Baseline writes happen only after explicit `Load baseline` or `Save` to `baseline`.
 
 Metadata captures run IDs, timesteps, configs, provenance, and eval summaries for future tuning.
 
@@ -347,6 +357,8 @@ Generate new baseline metrics from fresh suites in the `baseline` experiment bef
   - `.venv\Scripts\python.exe -m ruff check scripts snake_frame tests main.py`
 - Full tests:
   - `.venv\Scripts\python.exe -m pytest -q`
+- Quick reliability gate:
+  - `.venv\Scripts\python.exe scripts\quick_gate.py --cycles 5`
 - Determinism:
   - `.venv\Scripts\python.exe scripts\validate_determinism.py --baseline tests\baselines\deterministic_windows.json`
 - Smoke median gate:

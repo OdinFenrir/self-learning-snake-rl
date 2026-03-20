@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-03-20 - reliability gate, artifact purge, atomic persistence hardening
+
+- Added quick reliability gate workflow:
+  - `scripts/quick_gate.py` for repeated critical-path pytest cycles.
+  - `snake_frame/gate_runner.py` for in-app gate execution with structured pass/fail details.
+  - `run_quick_gate.bat` and `scripts/windows/run_quick_gate.bat` helper entrypoints.
+- Enforced quick-gate blocking in Model Manager sensitive actions (`welcome.py`):
+  - promote to baseline
+  - baseline delete
+  - recover baseline (model-only and model+artifacts)
+- Added report artifact cleanup tooling:
+  - `Report Artifact Manager` (retain latest + last N stamped outputs)
+  - `Purge Report Artifacts` (hard-delete canonical report artifacts)
+  - tooling script: `scripts/reporting/manage_report_artifacts.py`
+  - analysis orchestration wiring for both actions.
+- Hardening fixes:
+  - atomic model/vec/metadata save path in `snake_frame/ppo_agent.py` (temp + `os.replace`).
+  - baseline metadata normalization in `snake_frame/model_manager.py`.
+  - improved save-to-new-experiment runtime reload status handling in `snake_frame/app_actions.py`.
+  - agent report row selection hardened for episode-reset segmentation in `scripts/agent_performance/build_agent_performance_report.py`.
+- Coverage additions:
+  - gate runner tests
+  - report manager/purge tests
+  - app actions/model manager/persistence/report regression tests for the new paths.
+- Repository cleanup:
+  - removed obsolete legacy archive artifacts under `artifacts/archives/20260316_*`.
+
 ## 2026-03-19 - analysis tools consistency and report retention
 
 - Fixed analysis-tools execution/preview consistency:

@@ -54,6 +54,12 @@ Report builders and visuals must not write outside these roots.
 - Never delete non-matching files.
 - Stamped token format is `YYYYMMDD_HHMMSS`.
 
+## Cleanup Operations
+
+- Retention prune: keeps `latest` + last `N` stamped files per family/prefix.
+- Purge-all: deletes all files under selected canonical report families.
+- Both operations are available in app Analysis Tools (`Report Artifact Manager`, `Purge Report Artifacts`).
+
 ## CLI Contract
 
 Common arguments:
